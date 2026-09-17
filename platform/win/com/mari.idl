@@ -1,0 +1,477 @@
+/* Mari Paint — COM 인터페이스 정의 (docs/02 6.1 초안 확장)
+ *
+ * 🔴 전부 dual 인터페이스(IDispatch 상속)다. 그래야 C++/C# 뿐 아니라
+ *    Python(pywin32) · VBA · PowerShell · AutoHotkey 까지 전부 붙는다.
+ *    이게 "다양한 프로그램과 호환"의 실체다(docs/02 6.1).
+ *
+ * 🔴 등록은 LocalServer32 다(InprocServer32 아님). 프로세스 분리가 설계의 핵심이다
+ *    (docs/02 6.3). InprocServer32 로 바꾸면 스크립트가 우리 주소 공간에서 돌고,
+ *    그리기 스레드가 남의 코드에 막힌다.
+ *
+ * 🔴 여기에 해시체인·서명·등급 판정은 없다(docs/03 2절 경계선).
+ *    Mari 는 증거를 **발행**만 한다. 봉인·서명은 Sigan 의 몫이다.
+ *    `IMariEventSink` 는 "저장했다 / 해시는 이거다" 까지만 말한다.
+ *
+ * 빌드: midl mari.idl /out <bindir> /tlb mari.tlb /h mari.h /iid mari_i.c /proxy mari_p.c
+ */
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+[
+    uuid(EB223729-5306-4A98-9AE1-F788F465F616),
+    version(1.0),
+    helpstring("Mari Paint 1.0 타입 라이브러리")
+]
+library MariPaintLib
+{
+    importlib("stdole2.tlb");
+
+    interface IMariApplication;
+    interface IMariDocuments;
+    interface IMariDocument;
+    interface IMariLayers;
+    interface IMariLayer;
+    interface IMariSelection;
+    interface IMariEventSink;
+    interface IMari8bfHost;
+
+    /* ────────────────────────────────────────────────────────────────────
+     * 상수
+     * ──────────────────────────────────────────────────────────────────── */
+
+    /* 블렌드 모드. core 의 mari::BlendMode 와 값이 같다.
+     * 🔴 직렬화에 쓰인다 — 중간에 끼워 넣지 말고 **뒤에만 더해라**. */
+    typedef [v1_enum, uuid(3B5F2F30-2C1E-4E6F-9A1D-9B6C2F5D0A11)]
+    enum MariBlendMode
+    {
+        mariBlendNormal      = 0,
+        mariBlendMultiply    = 1,
+        mariBlendScreen      = 2,
+        mariBlendOverlay     = 3,
+        mariBlendDarken      = 4,
+        mariBlendLighten     = 5,
+        mariBlendColorDodge  = 6,
+        mariBlendColorBurn   = 7,
+        mariBlendHardLight   = 8,
+        mariBlendSoftLight   = 9,
+        mariBlendDifference  = 10,
+        mariBlendExclusion   = 11,
+        mariBlendHue         = 12,
+        mariBlendSaturation  = 13,
+        mariBlendColor       = 14,
+        mariBlendLuminosity  = 15,
+        mariBlendAdd         = 16,
+        mariBlendSubtract    = 17,
+        mariBlendErase       = 18
+    } MariBlendMode;
+
+    /* 레이어 종류. core 의 mari::LayerKind 와 값이 같다. */
+    typedef [v1_enum, uuid(9C0A5B21-7F33-4B5A-8E12-4D2E6A9F1C02)]
+    enum MariLayerKind
+    {
+        mariLayerRaster = 0,
+        mariLayerGroup  = 1
+    } MariLayerKind;
+
+    /* 붙여넣기 출처. Sigan 의 빈 스키마 칸을 채운다(docs/03 4절).
+     * 🔴 "어디서 왔는지 모른다"를 숨기지 않는다 — mariPasteUnknown 이 있는 이유다. */
+    typedef [v1_enum, uuid(5E7D1A44-6B90-4C21-93E5-2A8F0B7D3C13)]
+    enum MariPasteSource
+    {
+        mariPasteUnknown     = 0,
+        mariPasteClipboard   = 1,
+        mariPasteFile        = 2,
+        mariPasteDragDrop    = 3,
+        mariPasteScript      = 4,  /* COM 으로 들어온 픽셀 */
+        mariPasteInternal    = 5   /* 같은 문서 안에서 복사 */
+    } MariPasteSource;
+
+    /* 8bf 호스트 결과. host8bf::HostStatus 와 값이 같다. */
+    typedef [v1_enum, uuid(41F6C2B8-0D57-4A3E-B26C-7C1E5F9A8D04)]
+    enum MariHostStatus
+    {
+        mariHostOk                = 0,
+        mariHostLoadFailed        = 1,
+        mariHostRefused           = 2,
+        mariHostCrashed           = 3,
+        mariHostTimedOut          = 4,
+        mariHostUnsupportedFormat = 5,
+        mariHostShmError          = 6,
+        mariHostCancelled         = 7,
+        mariHostArchMismatch      = 8
+    } MariHostStatus;
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariLayer — 레이어 하나
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(1998B1C3-4549-4D62-A6C3-08103F40ABB4),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring("레이어 하나")
+    ]
+    interface IMariLayer : IDispatch
+    {
+        [propget, id(1), helpstring("레이어 식별자. 문서 안에서 유일하다")]
+        HRESULT Id([out, retval] LONG* pVal);
+
+        [propget, id(2)] HRESULT Name([out, retval] BSTR* pVal);
+        [propput, id(2)] HRESULT Name([in] BSTR newVal);
+
+        [propget, id(3), helpstring("mariLayerRaster / mariLayerGroup")]
+        HRESULT Kind([out, retval] MariLayerKind* pVal);
+
+        [propget, id(4), helpstring("0.0 ~ 1.0")]
+        HRESULT Opacity([out, retval] DOUBLE* pVal);
+        [propput, id(4)] HRESULT Opacity([in] DOUBLE newVal);
+
+        [propget, id(5)] HRESULT BlendMode([out, retval] MariBlendMode* pVal);
+        [propput, id(5)] HRESULT BlendMode([in] MariBlendMode newVal);
+
+        [propget, id(6)] HRESULT Visible([out, retval] VARIANT_BOOL* pVal);
+        [propput, id(6)] HRESULT Visible([in] VARIANT_BOOL newVal);
+
+        [propget, id(7)] HRESULT Locked([out, retval] VARIANT_BOOL* pVal);
+        [propput, id(7)] HRESULT Locked([in] VARIANT_BOOL newVal);
+
+        [propget, id(8), helpstring("알파 잠금. 그린 자리에만 칠해진다")]
+        HRESULT AlphaLocked([out, retval] VARIANT_BOOL* pVal);
+        [propput, id(8)] HRESULT AlphaLocked([in] VARIANT_BOOL newVal);
+
+        [propget, id(9), helpstring("그려진 내용의 경계. 비어 있으면 전부 0")]
+        HRESULT BoundsLeft([out, retval] LONG* pVal);
+        [propget, id(10)] HRESULT BoundsTop([out, retval] LONG* pVal);
+        [propget, id(11), helpstring("배타 경계 — core 의 Rect 규약과 같다")]
+        HRESULT BoundsRight([out, retval] LONG* pVal);
+        [propget, id(12)] HRESULT BoundsBottom([out, retval] LONG* pVal);
+
+        [propget, id(13), helpstring("그룹 레이어의 자식들. 래스터면 빈 컬렉션")]
+        HRESULT Children([out, retval] IMariLayers** ppVal);
+
+        [id(20), helpstring("이 레이어 픽셀을 RGBA8 로 꺼낸다. 행 스트라이드 = Width*4")]
+        HRESULT ExportPixels([out] LONG* pWidth, [out] LONG* pHeight,
+                             [out, retval] SAFEARRAY(BYTE)* pData);
+
+        [id(21), helpstring("RGBA8 픽셀을 이 레이어에 써 넣는다. (x,y) 는 캔버스 좌표")]
+        HRESULT ImportPixels([in] LONG x, [in] LONG y, [in] LONG width, [in] LONG height,
+                             [in] SAFEARRAY(BYTE) data);
+
+        [id(22), helpstring("이 레이어 픽셀의 SHA-256 을 소문자 16진 문자열로. "
+                            "🔴 해시를 계산할 뿐 서명하지 않는다 — 서명은 Sigan 의 몫이다")]
+        HRESULT PixelHash([out, retval] BSTR* pVal);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariLayers — 레이어 컬렉션
+     *
+     * 🔴 순서 규약: **인덱스 0 = 가장 아래.** 합성은 0부터 위로 간다(core 와 같다).
+     *    포토샵 COM 과 반대다. 맞추지 않는다 — 우리 코어 규약이 정본이다.
+     *    대신 여기 주석과 helpstring 에 못박아 둔다.
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(7B30C411-E099-4656-A1FB-64562752AD40),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring("레이어 컬렉션. 인덱스 0 이 가장 아래다")
+    ]
+    interface IMariLayers : IDispatch
+    {
+        [propget, id(DISPID_VALUE), helpstring("인덱스 0 = 가장 아래")]
+        HRESULT Item([in] LONG index, [out, retval] IMariLayer** ppVal);
+
+        [propget, id(1)] HRESULT Count([out, retval] LONG* pVal);
+
+        [propget, id(DISPID_NEWENUM), restricted]
+        HRESULT _NewEnum([out, retval] IUnknown** ppVal);
+
+        [id(2), helpstring("래스터 레이어를 더한다. index < 0 이면 맨 위")]
+        HRESULT AddRaster([in] BSTR name, [in] LONG index, [out, retval] IMariLayer** ppVal);
+
+        [id(3), helpstring("그룹 레이어를 더한다. index < 0 이면 맨 위")]
+        HRESULT AddGroup([in] BSTR name, [in] LONG index, [out, retval] IMariLayer** ppVal);
+
+        [id(4)] HRESULT Remove([in] LONG id);
+
+        [id(5), helpstring("레이어를 옮긴다. parentId 0 이면 루트로")]
+        HRESULT Move([in] LONG id, [in] LONG parentId, [in] LONG index);
+
+        [id(6)] HRESULT FindById([in] LONG id, [out, retval] IMariLayer** ppVal);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariSelection — 선택 영역 (8bf 필터가 적용될 범위)
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(929E9FC6-CB8F-4390-AE64-537F94BB92A5),
+        dual,
+        nonextensible,
+        pointer_default(unique)
+    ]
+    interface IMariSelection : IDispatch
+    {
+        [propget, id(1)] HRESULT IsEmpty([out, retval] VARIANT_BOOL* pVal);
+        [propget, id(2)] HRESULT Left([out, retval] LONG* pVal);
+        [propget, id(3)] HRESULT Top([out, retval] LONG* pVal);
+        [propget, id(4), helpstring("배타 경계")] HRESULT Right([out, retval] LONG* pVal);
+        [propget, id(5)] HRESULT Bottom([out, retval] LONG* pVal);
+        [id(10)] HRESULT SelectRect([in] LONG x, [in] LONG y, [in] LONG w, [in] LONG h);
+        [id(11)] HRESULT SelectAll();
+        [id(12)] HRESULT Deselect();
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariDocument — 문서 하나
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(7F49D024-32D7-4F74-85A7-E215949164E0),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring("문서 하나")
+    ]
+    interface IMariDocument : IDispatch
+    {
+        [propget, id(1)] HRESULT Layers([out, retval] IMariLayers** ppVal);
+        [propget, id(2)] HRESULT Width([out, retval] LONG* pVal);
+        [propget, id(3)] HRESULT Height([out, retval] LONG* pVal);
+        [propget, id(4), helpstring("저장된 적 없으면 빈 문자열")]
+        HRESULT FullName([out, retval] BSTR* pVal);
+        [propget, id(5)] HRESULT Saved([out, retval] VARIANT_BOOL* pVal);
+        [propget, id(6)] HRESULT Selection([out, retval] IMariSelection** ppVal);
+
+        [propget, id(7), helpstring("활성 레이어")]
+        HRESULT ActiveLayer([out, retval] IMariLayer** ppVal);
+        [propputref, id(7)] HRESULT ActiveLayer([in] IMariLayer* newVal);
+
+        /* 뷰 상태. 🔴 Sigan 이 ①캔버스 좌표 ↔ ②RawInput 화면 좌표를 대조하는 데 쓴다
+         * (docs/03 7절). 줌·회전만으로는 부족해서 행렬 6개를 통째로 낸다. */
+        [propget, id(8)] HRESULT ViewZoom([out, retval] DOUBLE* pVal);
+        [propget, id(9)] HRESULT ViewRotation([out, retval] DOUBLE* pVal);
+        [id(10), helpstring("캔버스→화면 아핀 행렬 [a b tx c d ty]")]
+        HRESULT GetViewMatrix([out, retval] SAFEARRAY(DOUBLE)* pVal);
+
+        [id(20)] HRESULT Save();
+        [id(21), helpstring("format: \"ora\" | \"png\" | \"psd\"")]
+        HRESULT SaveAs([in] BSTR path, [in] BSTR format);
+        [id(22)] HRESULT Close([in] VARIANT_BOOL saveChanges);
+
+        [id(23), helpstring("합성 결과를 RGBA8 로 꺼낸다")]
+        HRESULT ExportPixels([out] LONG* pWidth, [out] LONG* pHeight,
+                             [out, retval] SAFEARRAY(BYTE)* pData);
+
+        [id(24), helpstring("RGBA8 픽셀을 새 레이어로 들여온다. "
+                            "🔴 이 경로로 들어온 픽셀은 OnPaste(mariPasteScript) 로 보고된다 — "
+                            "붓으로 그리지 않은 픽셀을 그린 것처럼 위장하지 않는다")]
+        HRESULT ImportPixels([in] BSTR layerName, [in] SAFEARRAY(BYTE) data,
+                             [in] LONG width, [in] LONG height,
+                             [out, retval] IMariLayer** ppVal);
+
+        [id(25), helpstring("합성 결과의 SHA-256. 🔴 계산만 한다. 봉인·서명은 Sigan 의 몫이다")]
+        HRESULT CanvasHash([out, retval] BSTR* pVal);
+
+        [id(26), helpstring("지금 화면을 증거로 남긴다 → OnCanvasSnapshot 이 발생한다")]
+        HRESULT TakeCanvasSnapshot([out, retval] BSTR* pHash);
+
+        [id(30)] HRESULT Undo();
+        [id(31)] HRESULT Redo();
+
+        [id(40), helpstring(".8bf 필터를 건다. 격리 호스트에서 돈다(docs/02 6.2). "
+                            "timeoutMs <= 0 이면 기본 30초")]
+        HRESULT Apply8bf([in] BSTR pluginPath, [in] BSTR filterName, [in] LONG timeoutMs,
+                         [out, retval] MariHostStatus* pStatus);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariDocuments — 문서 컬렉션
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(17CDEFD6-D55A-4F05-9CB6-B33357F81B3A),
+        dual,
+        nonextensible,
+        pointer_default(unique)
+    ]
+    interface IMariDocuments : IDispatch
+    {
+        [propget, id(DISPID_VALUE)] HRESULT Item([in] LONG index,
+                                                 [out, retval] IMariDocument** ppVal);
+        [propget, id(1)] HRESULT Count([out, retval] LONG* pVal);
+        [propget, id(DISPID_NEWENUM), restricted]
+        HRESULT _NewEnum([out, retval] IUnknown** ppVal);
+        [id(2)] HRESULT Add([in] LONG width, [in] LONG height,
+                            [out, retval] IMariDocument** ppVal);
+        [id(3)] HRESULT Open([in] BSTR path, [out, retval] IMariDocument** ppVal);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariEventSink — 연결점 (docs/03 4절 ③ 이벤트 채널)
+     *
+     * 🔴 Sigan 이 구현하고 Mari 가 호출한다. 빈도는 분당 몇 번이다.
+     *    스트로크는 여기로 안 온다 — 초당 수백 개라 COM 마샬링이 16ms 예산을 깬다.
+     *    그건 명명 파이프 `sigan-native` 가 받는다(docs/03 4절 ②).
+     *
+     * 🔴 전부 [id(n)] 를 가진 dispinterface 호환 메서드다. C# 은 COM 인터롭으로,
+     *    Python 은 win32com.server 로 바로 구현할 수 있다.
+     *
+     * 규약: 싱크가 느리면 Mari 가 느려진다. **구현은 즉시 반환해야 한다.**
+     *       Mari 는 싱크 호출을 그리기 스레드에서 하지 않지만, 무한정 기다리지도 않는다.
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(64B8C3EA-FD1B-4750-8792-4EA835ED69BA),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring("Mari 이벤트 싱크. Sigan 이 구현한다")
+    ]
+    interface IMariEventSink : IDispatch
+    {
+        [id(1), helpstring("문서를 열었다. hash 는 연 파일의 SHA-256")]
+        HRESULT OnDocumentOpened([in] BSTR path, [in] BSTR hash,
+                                 [in] LONG width, [in] LONG height);
+
+        [id(2), helpstring("문서를 저장했다. 🔴 Sigan 의 Outputs 를 자동으로 채운다(docs/03 S2). "
+                           "sizeBytes 는 저장된 파일 크기")]
+        HRESULT OnDocumentSaved([in] BSTR path, [in] BSTR hash, [in] hyper sizeBytes);
+
+        [id(3), helpstring("캔버스 픽셀 스냅샷을 찍었다. 🔴 docs/03 S3 — "
+                           "StartCanvasHash/EndCanvasHash 가 v0 null 을 벗어나는 지점")]
+        HRESULT OnCanvasSnapshot([in] BSTR hash);
+
+        [id(4), helpstring("뷰가 바뀌었다(줌·회전). 🔴 두 증인 대조용(docs/03 7절)")]
+        HRESULT OnViewChanged([in] DOUBLE zoom, [in] DOUBLE rotation);
+
+        [id(5), helpstring("픽셀을 붙여 넣었다. 🔴 '붓으로 그리지 않은 픽셀'을 정직하게 드러낸다")]
+        HRESULT OnPaste([in] MariPasteSource source);
+
+        [id(6), helpstring("실행취소·다시실행이 일어났다. steps 는 양수면 undo, 음수면 redo")]
+        HRESULT OnUndo([in] LONG steps);
+
+        [id(7), helpstring("레이어가 바뀌었다(추가·삭제·이동·속성 변경)")]
+        HRESULT OnLayerChanged([in] LONG layerId, [in] BSTR changeKind);
+
+        [id(8), helpstring("획 하나가 끝났다. seq 는 파이프 프레임의 시퀀스와 같다 — "
+                           "🔴 이걸로 COM 이벤트와 파이프 스트로크를 이어 붙인다(docs/03 4.1)")]
+        HRESULT OnStrokeCompleted([in] LONG layerId, [in] hyper firstSeq, [in] hyper lastSeq,
+                                  [in] LONG pointCount);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMariApplication — 최상위 (docs/03 4절 ① 제어 채널)
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(7AA1A24F-1BD0-405B-B89F-F85FD307427E),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring("Mari Paint 애플리케이션")
+    ]
+    interface IMariApplication : IDispatch
+    {
+        [propget, id(1)] HRESULT Documents([out, retval] IMariDocuments** ppVal);
+        [propget, id(2)] HRESULT ActiveDocument([out, retval] IMariDocument** ppVal);
+        [propget, id(3), helpstring("\"mari-paint/0.1.0\" 형식")]
+        HRESULT Version([out, retval] BSTR* pVal);
+        [propget, id(4)] HRESULT Visible([out, retval] VARIANT_BOOL* pVal);
+        [propput, id(4)] HRESULT Visible([in] VARIANT_BOOL newVal);
+
+        [id(10)] HRESULT Open([in] BSTR path, [out, retval] IMariDocument** ppVal);
+        [id(11)] HRESULT CreateDocument([in] LONG width, [in] LONG height,
+                                        [out, retval] IMariDocument** ppVal);
+        [id(12)] HRESULT Quit();
+
+        /* 이벤트 싱크 연결. IConnectionPointContainer 로도 붙을 수 있지만,
+         * 스크립트 언어에서는 이쪽이 훨씬 쉽다. 둘 다 지원한다. */
+        [id(20), helpstring("이벤트 싱크를 건다. 돌려받은 쿠키로 나중에 뗀다")]
+        HRESULT AdviseEvents([in] IMariEventSink* sink, [out, retval] LONG* pCookie);
+        [id(21)] HRESULT UnadviseEvents([in] LONG cookie);
+
+        /* 🔴 Sigan 연동 상태. docs/03 5.1 — 설정 토글은 두지 않는다. **상태 표시만 한다.** */
+        [propget, id(30), helpstring("sigan-native 파이프에 붙어 있나")]
+        HRESULT SiganConnected([out, retval] VARIANT_BOOL* pVal);
+        [propget, id(31), helpstring("아직 싱크가 못 받아 저널에만 있는 프레임 수. "
+                                     "🔴 드롭이 아니라 스풀이다(docs/03 4.2)")]
+        HRESULT SiganSpooledFrames([out, retval] hyper* pVal);
+        [propget, id(32), helpstring("이번 세션에서 마지막으로 배정된 seq")]
+        HRESULT SiganLastSeq([out, retval] hyper* pVal);
+
+        [propget, id(40), helpstring("🔴 항상 \"windows-ink\" 다. WinTab 은 구현하지 않는다"
+                                     "(docs/03 3절). 이 값이 다른 것을 반환하면 설계 위반이다")]
+        HRESULT PenInputApi([out, retval] BSTR* pVal);
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * IMari8bfHost — 격리 호스트 (docs/02 6.2)
+     *
+     * 🔴 본체가 클라이언트, 별도 프로세스(mari-8bf-host-{x86,x64}.exe)가 서버다.
+     * 🔴 **픽셀은 이 인터페이스를 타지 않는다.** 공유 메모리(파일 매핑)로 간다.
+     *    여기로는 매핑 이름과 크기만 넘긴다.
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        object,
+        uuid(A44B4770-9944-49B0-A677-44A7FF5577BB),
+        dual,
+        nonextensible,
+        pointer_default(unique),
+        helpstring(".8bf 격리 호스트")
+    ]
+    interface IMari8bfHost : IDispatch
+    {
+        [propget, id(1), helpstring("호스트가 64비트인가. 플러그인 아키텍처와 맞아야 한다")]
+        HRESULT Is64Bit([out, retval] VARIANT_BOOL* pVal);
+
+        [id(2), helpstring("플러그인을 훑어 메뉴 항목 목록을 낸다(PIPL). "
+                           "🔴 번역 못 한 프로퍼티는 pNotes 에 남는다 — 조용히 버리지 않는다")]
+        HRESULT Enumerate([in] BSTR pluginPath,
+                          [out] SAFEARRAY(BSTR)* pNotes,
+                          [out, retval] SAFEARRAY(BSTR)* pFilterNames);
+
+        [id(3), helpstring("필터를 건다. shmName 은 픽셀이 들어 있는 파일 매핑 이름. "
+                           "🔴 픽셀은 COM 을 타지 않는다(docs/02 6.2)")]
+        HRESULT Apply([in] BSTR pluginPath, [in] BSTR filterName,
+                      [in] BSTR shmName, [in] hyper shmSize,
+                      [in] LONG timeoutMs,
+                      [out] SAFEARRAY(BSTR)* pNotes,
+                      [out, retval] MariHostStatus* pStatus);
+
+        [id(4), helpstring("진행 중인 Apply 를 취소한다. 다른 스레드에서 불러도 된다")]
+        HRESULT Cancel();
+
+        [propget, id(5), helpstring("0..100")]
+        HRESULT Progress([out, retval] LONG* pVal);
+
+        [id(6), helpstring("호스트가 살아 있나. 본체가 주기적으로 찔러 본다 — "
+                           "죽었으면 RPC_E_* 가 돌아오고 본체는 그것만 보고 산다")]
+        HRESULT Ping();
+    };
+
+    /* ────────────────────────────────────────────────────────────────────
+     * 코클래스
+     * ──────────────────────────────────────────────────────────────────── */
+    [
+        uuid(B2DC6851-7CDE-4626-981F-398F0DA41EE8),
+        helpstring("Mari Paint 애플리케이션 (LocalServer32)")
+    ]
+    coclass MariApplication
+    {
+        [default] interface IMariApplication;
+        [default, source] interface IMariEventSink;
+    };
+
+    [
+        uuid(2F832365-E1A7-4D99-A5BE-652C5932446B),
+        helpstring("Mari .8bf 격리 호스트 (LocalServer32)")
+    ]
+    coclass Mari8bfHost
+    {
+        [default] interface IMari8bfHost;
+    };
+};

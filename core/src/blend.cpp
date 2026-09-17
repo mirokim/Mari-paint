@@ -9,7 +9,9 @@ namespace {
 
 constexpr f32 kInv255 = 1.0f / 255.0f;
 
-[[nodiscard]] inline f32 clamp01(f32 v) noexcept { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+[[nodiscard]] inline f32 clamp01(f32 v) noexcept {
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
 
 [[nodiscard]] inline u8 toU8(f32 v) noexcept {
     return static_cast<u8>(clamp01(v) * 255.0f + 0.5f);

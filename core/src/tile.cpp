@@ -1,12 +1,17 @@
 // Mari Paint — 타일 캔버스 구현. 선언은 include/mari/core/tile.hpp.
 //
-// docs/02 3절의 "O(1) 복제"는 세 겹의 Copy-on-Write 에서 나온다.
+// docs/02 3절의 "복제가 O(1)" 은 Copy-on-Write 에서 나온다. 실체는 이렇다.
 //   1) 픽셀 버퍼 COW — BufferTile 은 16KB 픽셀 버퍼를 shared_ptr 로 공유한다.
-//                      mutablePixels() 가 불릴 때만 갈라선다. clone() 은 O(1).
-//   2) 타일 객체     — 한 TileMap 안의 Tile 객체는 그 맵이 **단독 소유**한다.
-//                      덕분에 writable() 이 돌려준 TilePtr 는 계속 유효하다.
-//   3) 맵 COW        — snapshot() 은 희소 맵을 통째로 공유한다(진짜 O(1)).
-//                      이후 첫 쓰기에서만 타일 객체를 복제한다(픽셀 복사는 없다).
+//                      mutablePixels() 가 불릴 때 비로소 갈라선다. clone() 은 O(1).
+//   2) 타일 객체 단독 소유 — 한 TileMap 안의 Tile 객체는 그 맵만 갖는다.
+//                      snapshot() 은 타일 **핸들만** 복제한다(픽셀 복사는 0 바이트).
+//
+// 왜 맵 자체를 공유(진짜 O(1))하지 않는가:
+//   writable() 이 돌려준 TilePtr 를 붙잡은 채 snapshot() 을 뜨면, 맵을 공유한 경우
+//   그 포인터로 쓴 내용이 스냅샷까지 오염시킨다(조용한 버그다). 타일 객체를
+//   미리 갈라 두면 그 경로가 막힌다. 스냅샷 비용은 "할당된 타일 수만큼의 작은
+//   핸들 복제" 이고 픽셀은 한 바이트도 복사하지 않는다 — 8K 레이어 기준 수백 KB가
+//   아니라 수백 μs 수준이다.
 #include <mari/core/tile.hpp>
 
 #include <cstring>
@@ -97,14 +102,14 @@ private:
 /// 희소 타일 맵. 없는 좌표는 nullptr = 완전 투명 — 메모리를 쓰지 않는다.
 class SparseTileMap final : public TileMap {
 public:
-    explicit SparseTileMap(PixelFormat f) : format_(f), storage_(std::make_shared<Storage>()) {}
+    explicit SparseTileMap(PixelFormat f) : format_(f) {}
 
     PixelFormat format() const override { return format_; }
-    usize tileCount() const override { return storage_->tiles.size(); }
+    usize tileCount() const override { return tiles_.size(); }
 
     Rect bounds() const override {
         Rect r{};
-        for (const auto& [c, t] : storage_->tiles) {
+        for (const auto& [c, t] : tiles_) {
             (void)t;
             r = r.united(c.canvasRect());
         }
@@ -112,54 +117,42 @@ public:
     }
 
     ConstTilePtr at(TileCoord c) const override {
-        const auto it = storage_->tiles.find(c);
-        return it == storage_->tiles.end() ? nullptr : it->second;
+        const auto it = tiles_.find(c);
+        return it == tiles_.end() ? nullptr : it->second;
     }
 
     Result<TilePtr> writable(TileCoord c) override {
         if (format_ == PixelFormat::Unknown)
             return Err("Unknown 포맷 타일맵에는 쓸 수 없다", ErrorCode::InvalidArgument);
-        detach();
-        auto it = storage_->tiles.find(c);
-        if (it == storage_->tiles.end()) {
-            auto t = std::make_shared<BufferTile>(format_);
-            it = storage_->tiles.emplace(c, std::move(t)).first;
-        }
+        auto it = tiles_.find(c);
+        if (it == tiles_.end())
+            it = tiles_.emplace(c, std::make_shared<BufferTile>(format_)).first;
         return it->second;
     }
 
-    void erase(TileCoord c) override {
-        if (storage_->tiles.find(c) == storage_->tiles.end())
-            return;
-        detach();
-        storage_->tiles.erase(c);
-    }
+    void erase(TileCoord c) override { tiles_.erase(c); }
 
-    void clear() override {
-        if (storage_->tiles.empty())
-            return;
-        storage_ = std::make_shared<Storage>(); // 공유본(스냅샷)은 건드리지 않는다
-    }
+    void clear() override { tiles_.clear(); }
 
     void collectTiles(const Rect& canvasArea, DirtyTiles& out) const override {
-        if (canvasArea.isEmpty() || storage_->tiles.empty())
+        if (canvasArea.isEmpty() || tiles_.empty())
             return;
         const i32 tx0 = tileIndexFor(canvasArea.x);
         const i32 ty0 = tileIndexFor(canvasArea.y);
         const i32 tx1 = tileIndexFor(canvasArea.right() - 1);
         const i32 ty1 = tileIndexFor(canvasArea.bottom() - 1);
         const i64 span = static_cast<i64>(tx1 - tx0 + 1) * static_cast<i64>(ty1 - ty0 + 1);
-        if (span <= static_cast<i64>(storage_->tiles.size())) {
+        if (span <= static_cast<i64>(tiles_.size())) {
             // 영역이 좁다 — 좌표를 훑으며 조회한다.
             for (i32 ty = ty0; ty <= ty1; ++ty)
                 for (i32 tx = tx0; tx <= tx1; ++tx) {
                     const TileCoord c{tx, ty};
-                    if (storage_->tiles.find(c) != storage_->tiles.end())
+                    if (tiles_.find(c) != tiles_.end())
                         out.push_back(c);
                 }
         } else {
             // 할당된 타일이 더 적다 — 맵을 훑는다.
-            for (const auto& [c, t] : storage_->tiles) {
+            for (const auto& [c, t] : tiles_) {
                 (void)t;
                 if (canvasArea.intersects(c.canvasRect()))
                     out.push_back(c);
@@ -167,31 +160,18 @@ public:
         }
     }
 
+    /// 타일 핸들만 복제한다. 픽셀 버퍼는 공유되고, 어느 쪽이든 쓸 때 갈라선다.
     std::shared_ptr<TileMap> snapshot() const override {
         auto s = std::make_shared<SparseTileMap>(format_);
-        s->storage_ = storage_; // 맵째로 공유한다 — O(1)
+        s->tiles_.reserve(tiles_.size());
+        for (const auto& [c, t] : tiles_)
+            s->tiles_.emplace(c, t->clone());
         return s;
     }
 
 private:
-    struct Storage {
-        std::unordered_map<TileCoord, TilePtr, TileCoordHash> tiles;
-    };
-
-    /// 맵이 스냅샷과 공유 중이면 갈라선다.
-    /// 타일 **객체**는 복제하지만 픽셀 버퍼는 계속 공유한다 — 픽셀 복사는 0이다.
-    void detach() {
-        if (storage_.use_count() <= 1)
-            return;
-        auto fresh = std::make_shared<Storage>();
-        fresh->tiles.reserve(storage_->tiles.size());
-        for (const auto& [c, t] : storage_->tiles)
-            fresh->tiles.emplace(c, t->clone());
-        storage_ = std::move(fresh);
-    }
-
     PixelFormat format_;
-    std::shared_ptr<Storage> storage_;
+    std::unordered_map<TileCoord, TilePtr, TileCoordHash> tiles_;
 };
 
 } // namespace

@@ -69,6 +69,8 @@ public:
 
 private:
     class Sink;
+    /// 더티 목록을 정렬·중복제거한다. 할당하지 않는다.
+    void compactDirty() noexcept;
 
     brush::IBrushEngine* engine_ = nullptr;
     StrokeConfig cfg_{};

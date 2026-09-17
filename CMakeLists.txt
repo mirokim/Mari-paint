@@ -37,9 +37,17 @@ if(MARI_BUILD_TESTS)
 endif()
 
 add_subdirectory(core)
+add_subdirectory(stroke)
 add_subdirectory(io/ora)
 add_subdirectory(io/brush)
 add_subdirectory(sigan)
+
+# Windows 전용 레이어. 각 파일 안에도 WIN32 가드가 있지만 여기서도 명시적으로 막는다.
+# platform/win 이 hosts 보다 먼저여야 한다(hosts/CMakeLists.txt 가 FATAL_ERROR 로 막는다).
+if(WIN32)
+    add_subdirectory(platform/win)
+    add_subdirectory(hosts)
+endif()
 
 if(MARI_BUILD_TESTS)
     add_subdirectory(tests)

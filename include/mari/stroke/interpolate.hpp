@@ -16,6 +16,8 @@
 #include <mari/brush/engine.hpp>
 #include <mari/stroke/input.hpp>
 
+#include <vector>
+
 namespace mari::stroke {
 
 /// 보간이 만들어 낸 스탬프를 받는 곳.
@@ -72,6 +74,10 @@ private:
     f32 pending_ = 0.0f; ///< 다음 스탬프까지 남은 거리
     usize emitted_ = 0;
     bool started_ = false;
+    /// 구간 하나를 잘게 쪼갠 점과 누적 호길이. **begin() 에서 미리 잡는다** —
+    /// push() 는 resize() 만 하고 할당하지 않는다.
+    std::vector<PointF> pts_;
+    std::vector<f32> cum_;
 };
 
 /// 중심 파라미터화 Catmull-Rom 한 점. t 는 p1→p2 구간의 0..1.

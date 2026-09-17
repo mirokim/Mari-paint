@@ -3,8 +3,13 @@
 # 이 파일은 sigan 담당 에이전트가 소유한다.
 
 set(MARI_SIGAN_SOURCES
-    # src/frame.cpp
-    # src/journal.cpp
+    src/frame.cpp
+    src/clock.cpp
+    src/handshake.cpp
+    src/journal.cpp
+    src/pipe_sink.cpp
+    src/publisher.cpp
+    src/prooflog.cpp
 )
 
 if(MARI_SIGAN_SOURCES)

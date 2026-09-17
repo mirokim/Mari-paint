@@ -3,8 +3,11 @@
 # 기반 계층이 만든 스텁이다: 소스가 없으면 인터페이스 라이브러리로 동작한다.
 
 set(MARI_CORE_SOURCES
-    # src/tile.cpp
-    # src/layer.cpp
+    src/tile.cpp
+    src/layer.cpp
+    src/blend.cpp
+    src/compositor.cpp
+    src/undo.cpp
 )
 
 if(MARI_CORE_SOURCES)

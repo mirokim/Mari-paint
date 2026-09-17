@@ -1,0 +1,234 @@
+# Mari Paint — CI
+#
+# 🔴 docs/03 10절: "말로 하면 안 지켜지니 CI 에 건다."
+#    거기 표의 검증 8종을 이 파일이 실제로 어떻게 돌리는지가 아래 `verification-matrix`
+#    잡에 적혀 있다. **지금 못 돌리는 것은 못 돌린다고 적었다.** 통과한 척하지 않는다.
+#
+# 구조:
+#   linux    — core / io / sigan / stroke 빌드 + ctest. g++ 와 clang 양쪽
+#   windows  — 전체 빌드(COM + Windows Ink + 8bf 호스트 x64/x86) + 🔴 WinTab 검사
+#   gates    — 두 잡이 다 통과해야 병합 가능
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # Linux — 플랫폼 중립 코어. 컴파일러 두 개로 돌린다.
+  #
+  # Windows 전용 레이어도 여기서 **일부** 검증된다: 뷰 변환·펜 정규화·8bf 프로토콜·
+  # PIPL 파서를 Win32 비의존 헤더로 빼 두었기 때문이다(tests/win/).
+  # 입력 경로에서 제일 틀리기 쉬운 부분이 Windows 러너 없이도 잡힌다.
+  # ════════════════════════════════════════════════════════════════════════════
+  linux:
+    name: Linux (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        include:
+          - compiler: gcc
+            cc: gcc-13
+            cxx: g++-13
+          - compiler: clang
+            cc: clang-18
+            cxx: clang++-18
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 의존성 설치
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake zlib1g-dev libsqlite3-dev libpng-dev \
+                                  ${{ matrix.cc }}
+
+      - name: 설정
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: 빌드
+        # 🔴 경고 0 을 유지한다. 경고를 쌓기 시작하면 아무도 안 본다.
+        run: cmake --build build -- -k 0
+
+      - name: 테스트
+        run: ctest --test-dir build --output-on-failure
+
+      - name: WIN32 가드 확인
+        # 🔴 platform/win 과 hosts 가 Linux 빌드에 끼어들지 않았는지 본다.
+        #    누가 if(WIN32) 를 지우면 여기서 걸린다.
+        run: |
+          if find build -name '*pointer_input*' -o -name '*mari_8bf_host*' | grep -q .; then
+            echo "::error::Windows 전용 산출물이 Linux 빌드에 들어왔다. if(WIN32) 가드를 확인해라."
+            exit 1
+          fi
+          echo "OK — Windows 전용 코드는 Linux 빌드에서 제외됐다"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Windows — 전체 빌드. x64 와 x86 을 따로 돈다(8bf 호스트가 두 벌이라서).
+  # ════════════════════════════════════════════════════════════════════════════
+  windows:
+    name: Windows (${{ matrix.arch }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, Win32]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # MIDL 과 dumpbin 을 PATH 에 올린다. 둘 다 Windows SDK / VS 에 있다.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'x64' && 'x64' || 'x86' }}
+
+      - name: 설정
+        run: cmake -S . -B build -A ${{ matrix.arch }}
+
+      - name: 빌드
+        run: cmake --build build --config RelWithDebInfo
+
+      - name: 테스트
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
+      # ══════════════════════════════════════════════════════════════════════
+      # 🔴 이 리포에서 가장 중요한 게이트 (docs/03 10절 `wintab_never_loaded`)
+      #
+      #    Mari 의 목표는 Sigan 의 WinTabKeywords 목록에 영원히 안 오르는 것이다.
+      #    Krita 가 거기 오른 이유가 정확히 이 검사를 안 해서다.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: 🔴 WinTab 미사용 검증
+        shell: pwsh
+        run: ./scripts/ci/check-no-wintab.ps1 -Path build
+
+      - name: COM 등록/해제 왕복
+        # LocalServer32 등록이 실제로 되는지 본다. HKCU 라 관리자 권한이 필요 없다.
+        # 🔴 InprocServer32 가 레지스트리에 생기면 실패시킨다 — 설계 위반이다.
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build -Recurse -Filter 'mari-8bf-host-*.exe' | Select-Object -First 1
+          if (-not $exe) { throw "8bf 호스트 실행파일을 찾지 못했다" }
+          & $exe.FullName /regserver
+          if ($LASTEXITCODE -ne 0) { throw "등록 실패 (exit $LASTEXITCODE)" }
+
+          $clsid = '{2F832365-E1A7-4D99-A5BE-652C5932446B}'
+          $key = "HKCU:\Software\Classes\CLSID\$clsid"
+          if (-not (Test-Path "$key\LocalServer32")) { throw "LocalServer32 키가 없다" }
+          if (Test-Path "$key\InprocServer32") {
+            throw "InprocServer32 가 생겼다. 프로세스 분리가 깨진다 — docs/02 6.3 위반이다."
+          }
+          Write-Host "OK — LocalServer32 로 등록됐다 (InprocServer32 없음)"
+
+          & $exe.FullName /unregserver
+          if (Test-Path $key) { throw "등록 해제 후에도 키가 남아 있다" }
+          Write-Host "OK — 등록 해제도 깨끗하다"
+
+      - name: .reg 생성 확인
+        # 패키저(MSI/winget)가 쓰는 경로. self-registration 없이도 배포 가능해야 한다.
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build -Recurse -Filter 'mari-8bf-host-*.exe' | Select-Object -First 1
+          & $exe.FullName /writereg "$env:RUNNER_TEMP\mari.reg"
+          if ($LASTEXITCODE -ne 0) { throw ".reg 생성 실패" }
+          $txt = Get-Content "$env:RUNNER_TEMP\mari.reg" -Raw
+          if ($txt -notmatch 'LocalServer32') { throw ".reg 에 LocalServer32 가 없다" }
+          if ($txt -match 'InprocServer32')   { throw ".reg 에 InprocServer32 가 있다 — 설계 위반" }
+          Write-Host "OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mari-${{ matrix.arch }}
+          path: |
+            build/**/*.exe
+            build/**/*.tlb
+          if-no-files-found: error
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # docs/03 10절 검증 8종 — 어디서 어떻게 도는가
+  #
+  # 🔴 정직하게 적는다. 지금 자동으로 못 도는 것은 "미구현" 이라고 쓴다.
+  #    통과한 척하는 게이트는 없느니만 못하다.
+  # ════════════════════════════════════════════════════════════════════════════
+  verification-matrix:
+    name: 검증 8종 현황 (docs/03 10절)
+    runs-on: ubuntu-24.04
+    needs: [linux, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 현황 출력
+        run: |
+          cat <<'EOF'
+          ┌──────────────────────────┬────────────┬──────────────────────────────────────────┐
+          │ 테스트                   │ 상태       │ 어디서 도나                              │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ wintab_never_loaded      │ ✅ 자동    │ windows 잡 · check-no-wintab.ps1         │
+          │                          │            │ 임포트 테이블 + 지연로드 + 문자열 3중    │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ canvas_xy_invariant      │ ✅ 자동    │ linux 잡 · tests/win/test_view_transform │
+          │                          │            │ 줌·회전·팬·미러 5종 뷰에서 좌표 동일     │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ clock_jump               │ ✅ 부분    │ linux 잡 · test_pen_normalize (qpcToNs)  │
+          │                          │            │ + sigan 모듈의 단조 시계 테스트          │
+          │                          │            │ ⚠️ 실제 시계 변경 시나리오는 미구현      │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ no_frame_drop            │ ⚠️ 부분    │ sigan 모듈 테스트가 seq 연속성을 본다.   │
+          │                          │            │ "10분 연속 드로잉"은 펜 하드웨어가 필요  │
+          │                          │            │ → 야간 수동 테스트. CI 에 못 넣는다      │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ sigan_restart_survives   │ ❌ 미구현  │ Sigan(비공개 앱)이 러너에 없다.          │
+          │                          │            │ 가짜 파이프 서버 하네스가 필요하다       │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ mari_crash_survives      │ ❌ 미구현  │ 저널 복구(recoverJournal)는 sigan 모듈   │
+          │                          │            │ 테스트가 덮는다. 진짜 강제 종료 시나리오 │
+          │                          │            │ 는 Windows 통합 테스트가 생긴 뒤에       │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ version_skew             │ ❌ 미구현  │ 핸드셰이크 협상 로직은 sigan 모듈에 있다.│
+          │                          │            │ 구버전 Sigan 바이너리를 구할 수 없다     │
+          ├──────────────────────────┼────────────┼──────────────────────────────────────────┤
+          │ golden_signature         │ ❌ 미구현  │ 🔴 VASE9 리포와 **공유** 골든 픽스처가   │
+          │                          │            │ 필요하다(docs/03 8절). 두 리포가 같은    │
+          │                          │            │ 바이트를 내는지 봐야 해서 한쪽만으론 무의│
+          │                          │            │ 미하다. VASE9 쪽 작업이 선행되어야 한다  │
+          └──────────────────────────┴────────────┴──────────────────────────────────────────┘
+
+          추가 게이트 (docs/02 6.3 · 설계 원칙 3):
+            ✅ LocalServer32 등록 왕복       — windows 잡
+            ✅ InprocServer32 부재 확인      — windows 잡 (설계 위반 감지)
+            ✅ .reg 생성                     — windows 잡
+            ✅ WIN32 가드 (Linux 오염 방지)  — linux 잡
+            ✅ 8bf 공유 메모리 레이아웃 고정 — linux 잡 · test_shm_layout
+               (x86 호스트와 x64 본체가 같은 바이트를 보는지)
+            ✅ PIPL 파서 적대적 입력 방어    — linux 잡 · test_pipl
+
+          ⚠️ 아직 게이트가 없는 것 (docs/02 8절 성능 목표):
+            콜드 스타트 < 1.5초 · 빈 캔버스 < 150MB · 펜→화면 < 16ms
+            → UI 레이어가 생긴 뒤에 붙인다. 지금 넣으면 측정 대상이 없다.
+          EOF
+
+  gates:
+    name: 병합 게이트
+    runs-on: ubuntu-24.04
+    needs: [linux, windows]
+    if: always()
+    steps:
+      - name: 결과 확인
+        run: |
+          if [ "${{ needs.linux.result }}" != "success" ] || \
+             [ "${{ needs.windows.result }}" != "success" ]; then
+            echo "::error::빌드 또는 검증이 실패했다"
+            exit 1
+          fi
+          echo "전부 통과"
