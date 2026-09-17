@@ -33,16 +33,24 @@
 
 `M0` 타일 캔버스 → `M1` 그리기 → `M2` 브러시 호환 → `M3` PSD → `M4` COM → `M5` 8bf 호스트 → `M6` 성능
 
-## Sigan 연동
+## Sigan 연동 — 제품 목표
 
-[Sigan](https://github.com/mirokim/VASE9)(작업 과정 증명 서비스)이 포토샵·CSP를 밖에서 훔쳐봐야 했던
-정보를, Mari Paint는 안에서 그냥 알고 있다 — 캔버스 좌표, 레이어, 픽셀 해시, 저장 파일.
-**"과정 증명이 내장된 유일한 페인트 툴"** 이 목표다.
+[Sigan](https://github.com/mirokim/VASE9)(작업 과정 증명 서비스)은 포토샵·CSP 안으로 들어갈 수 없어
+**밖에서 펜 신호를 훔쳐본다.** 그래서 캔버스 좌표도, 픽셀도, 레이어도 모른다.
+Mari Paint는 **안에 있다.**
 
-> ⚠️ 그래서 입력은 **Windows Ink 고정**이다. WinTab을 쓰면 Sigan의 기록이 침묵한다.
+> **Mari Paint = Sigan이 완전한 증거를 얻을 수 있는 유일한 페인트 툴.**
+
+두 제품은 **분리한다.** Mari는 증명 가능한 형태로 그릴 뿐, 증명하지 않는다 —
+체인 봉인·서명·등급 판정은 Sigan의 몫이다.
+
+> ⚠️ 그래서 입력은 **Windows Ink 고정이고 WinTab은 구현하지 않는다.**
+> WinTab 앱은 펜 HID를 독점해 죽인다 (CSP·포토샵·Krita에서 실측).
+> 목표: **Sigan의 `WinTabKeywords` 목록에 영원히 오르지 않는 최초의 드로잉 앱.**
 
 ## 정해야 할 것
 
 1. **라이선스 확정** — Apache-2.0 제안
 2. **1차 타깃 OS** — Windows 선출시 후 이식 vs 처음부터 크로스플랫폼
-3. **`.sigan` 서명 키 소유** — Mari는 공급만 하고 서명은 Sigan이 (제안)
+3. **Mari 프로세스명** — `mari-paint.exe`? Sigan의 `DrawingApps` 목록에 등록해야 한다
+4. **픽셀 스냅샷 주기·전송 방식** — 공유 메모리 여부, 매 획 vs N초

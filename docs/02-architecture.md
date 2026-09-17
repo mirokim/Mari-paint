@@ -12,6 +12,9 @@
    → 이게 "가볍다"를 실제로 보장하는 유일한 방법이다.
 3. **남의 코드는 내 프로세스에 들이지 않는다.** .8bf 플러그인은 무조건 별도 프로세스.
 4. **입력 지연이 최우선이다.** 펜이 닿고 픽셀이 보이기까지가 제품의 품질이다. 여기에 예산을 몰아준다.
+5. **증명 가능하게 그린다. 증명하지는 않는다.** 획·좌표·픽셀 해시는 Mari가 낸다.
+   체인 봉인·서명·등급 판정은 **Sigan의 몫**이고 Mari에 들어오지 않는다.
+   → [03-sigan-integration.md](./03-sigan-integration.md) 2절 경계선.
 
 ---
 
@@ -197,12 +200,14 @@ mari-paint.exe                       mari-8bf-host-x86.exe
 
 ## 7. Sigan (VASE9) 연동
 
-**확정됨.** sigan = [`mirokim/VASE9`](https://github.com/mirokim/VASE9), 작업 과정 증명 서비스.
+**Mari Paint의 목적 중 하나다.** 부가 기능이 아니다.
 전체 설계는 **[03-sigan-integration.md](./03-sigan-integration.md)**. 요약만 적는다.
 
-- Sigan은 C# WPF 기록기 + Next.js/Supabase 웹. `.sigan`(해시체인 + ES256 서명)이 계약 포맷.
-- 지금은 포토샵/CSP를 **밖에서** RawInput으로 훔쳐본다 → 캔버스 좌표·픽셀을 모른다.
-- Mari Paint는 **안에서 직접 발행**할 수 있다. 이게 두 제품 공통의 차별점이 된다.
+- Sigan = 작업 과정 증명 서비스. C# WPF 기록기 + Next.js/Supabase 웹. 프로덕션 동작 중.
+- 지금은 포토샵·CSP를 **밖에서** RawInput으로 훔쳐본다 → 캔버스 좌표·픽셀을 모른다.
+- Mari는 **안에 있다.** 그래서 Sigan이 완전한 증거를 얻을 수 있는 유일한 페인트 툴이 된다.
+- **분리 유지.** 내장하지 않는다 — Sigan은 비공개·유료 상품이고, 오픈소스에 기록기를 넣으면
+  위조 방어(서명 바이너리)가 무너진다.
 
 **채널 분리 (중요):**
 
@@ -212,10 +217,13 @@ mari-paint.exe                       mari-8bf-host-x86.exe
 | 스트로크 (초당 수백 점) | **명명 파이프** `sigan-native` | COM 마샬링은 16ms 예산을 깬다 |
 | 이벤트 (저장·뷰변경·붙여넣기) | **COM 연결점** `IMariEventSink` | Sigan의 빈 스키마 칸을 채운다 |
 
-파이프 규약은 Sigan의 기존 `WinTabBridge`(ACL 제한 + 세션 토큰 핸드셰이크 + 고정 길이 프레임)를
-그대로 따른다. 검증된 패턴을 새로 만들 이유가 없다.
+**🔴 입력 API 제약:** Mari는 **Windows Ink 고정, WinTab 미구현**이다.
+WinTab 앱은 펜 HID를 독점해 죽여 Sigan의 기록을 침묵시킨다(CSP·포토샵·**Krita**에서 실측됨).
+→ [01](./01-research.md) 3.5절, [03](./03-sigan-integration.md) 3절.
 
-**입력 API 제약:** 3절 결정에 따라 Mari는 **Windows Ink 고정**이다 → [01](./01-research.md) 3.5절.
+**🔴 오버플로 정책:** Sigan의 기존 HID 파이프는 큐가 차면 프레임을 버린다(`Dropped++`).
+샘플링 경로에선 맞지만 **네이티브 경로는 정본 기록이라 버리면 안 된다.**
+막히면 로컬 저널로 스풀한다 → [03](./03-sigan-integration.md) 4.2절.
 
 ## 8. 성능 목표 (측정 가능한 수치로)
 
@@ -259,3 +267,6 @@ M0~M2가 "페인트 툴"이고, M3~M5가 "호환성"이다. 순서를 바꾸면 
 | Wintab/WinInk 드라이버 충돌 | 높음 | 둘 다 구현. 자동 감지 + 수동 전환. 진단 화면 제공 |
 | Qt GPL 전용 모듈 오염 | 낮음 | CI에서 링크된 Qt 모듈 라이선스 검사 |
 | 기능 비대화로 "가볍다" 상실 | **높음** | 8절 수치를 CI 게이트로. 호환 모듈은 항상 선택적 |
+| Mari가 WinTab을 로드해 Sigan 기록이 침묵 | 높음 | WinTab 미구현. CI에서 `wintab32.dll` 로드 검사 |
+| Sigan 자동 업데이트 재시작으로 획 유실 | 중간 | 저널 + seq 연속성으로 재연결. 구간 분리 금지 ([03](./03-sigan-integration.md) 5.3) |
+| 스키마 변경이 서명 바이트를 깸 | 중간 | 선택 필드만 추가. 공유 골든 테스트 선행 ([03](./03-sigan-integration.md) 8절) |
