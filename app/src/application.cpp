@@ -66,10 +66,29 @@ IDocumentBridge* Application::activeDocument() {
     return docs_[active_ < docs_.size() ? active_ : docs_.size() - 1].get();
 }
 
+Result<void> Application::attachRecorderTo(Document& doc, std::string_view hint) {
+    if (recorders_ == nullptr) {
+        return Ok(); // 널 레코더. Sigan 미설치는 정상 상태다(docs/03 5.1)
+    }
+    Result<std::unique_ptr<agent::IStrokeRecorder>> rec = recorders_->openForDocument(hint);
+    if (!rec.ok()) {
+        // 🔴 기록 구간을 못 열면 문서를 열지 않는다. 열어 주면 그 뒤로 바뀌는 픽셀이
+        //    전부 기록 밖이 된다(docs/06 6절 H1).
+        return rec.error();
+    }
+    doc.attachRecorder(std::move(rec).value());
+    return Ok();
+}
+
 Result<IDocumentBridge*> Application::createDocument(i32 w, i32 h) {
     Result<std::unique_ptr<Document>> doc = Document::create(Size{w, h}, &events_);
     if (!doc.ok()) {
         return doc.error();
+    }
+    // 🔴 문서 하나 = 작업 구간 하나(docs/06 결정 ⑤). 여기서 저널이 열린다.
+    const Result<void> rec = attachRecorderTo(*doc.value(), "new");
+    if (!rec.ok()) {
+        return rec.error();
     }
     Document* raw = doc.value().get();
     docs_.push_back(std::move(doc).value());
@@ -91,6 +110,10 @@ Result<IDocumentBridge*> Application::open(const std::string& path) {
         Document::adopt(std::move(loaded).value().tree, path, &events_);
     if (!doc.ok()) {
         return doc.error();
+    }
+    const Result<void> rec = attachRecorderTo(*doc.value(), path);
+    if (!rec.ok()) {
+        return rec.error();
     }
     Document* raw = doc.value().get();
     docs_.push_back(std::move(doc).value());

@@ -10,13 +10,19 @@
 #  include <winsock2.h>
 #else
 #  include <arpa/inet.h>
+#  include <fcntl.h>
 #  include <netinet/in.h>
+#  include <poll.h>
 #  include <sys/socket.h>
 #  include <unistd.h>
 #endif
 
+#include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <utility>
 
 namespace mari::cli {
 namespace {
@@ -61,6 +67,22 @@ std::string plainError(const std::string& message) {
 }
 
 } // namespace
+
+std::string pushLine(const std::string& kind, const Json& data, u64 dropped) {
+    Json root = Json::object();
+    // 🔴 이 키 하나가 "요청하지 않았는데 온 줄"이라는 표시다. 응답에는 절대 붙지 않는다.
+    root.set("push", Json::boolean(true));
+    Json e = Json::object();
+    e.set("kind", Json::string(kind));
+    e.set("data", data);
+    root.set("event", std::move(e));
+    if (dropped != 0) {
+        // 🔴 놓친 건수를 숨기지 않는다. 이벤트 안의 seq 와 함께 보면
+        //    클라이언트가 자기가 뭘 못 봤는지 정확히 안다(docs/07 4절).
+        root.set("dropped", Json::integer(static_cast<i64>(dropped)));
+    }
+    return root.dump();
+}
 
 Result<ServeAddress> parseServeAddress(std::string_view spec) {
     ServeAddress a;
@@ -172,6 +194,217 @@ Result<void> serveTcp(agent::AgentSession&, const ServeAddress&, std::ostream&,
 
 #else
 
+namespace {
+
+/// 연결 하나의 푸시 대기열. **구독자 스레드가 넣고, 서브 루프가 꺼낸다.**
+///
+/// 🔴 `offer()` 는 절대 기다리지 않는다. 기다리면 구독자 스레드가 소켓에 묶이고,
+///    그 스레드가 묶이면 버스의 역압 정책(요약)이 무의미해진다.
+/// 🔴 정책은 관찰 경로 것 하나뿐이다 — **이 연결만 요약하고 센다.**
+///    Sigan 기록은 이 파일을 지나가지도 않는다(app/events.hpp ① 기록 경로).
+class PushOutbox {
+public:
+    explicit PushOutbox(int wakeFd) noexcept : wake_(wakeFd) {}
+
+    void offer(std::string line) {
+        {
+            std::lock_guard<std::mutex> g(m_);
+            if (q_.size() >= kCap) {
+                q_.pop_front();
+                ++dropped_; // 조용히 넘어가지 않는다. 다음 푸시 줄이 이 숫자를 싣는다
+            }
+            q_.push_back(std::move(line));
+        }
+        // 서브 루프를 깨운다. 파이프가 꽉 차 있어도 상관없다 —
+        // 이미 깨울 바이트가 들어 있다는 뜻이라 어차피 깨어난다.
+        const u8 one = 1;
+        (void)!::write(wake_, &one, 1);
+    }
+
+    /// 쌓인 줄을 통째로 가져간다. 놓친 건수도 같이 꺼내 0 으로 되돌린다.
+    std::deque<std::string> take(u64& droppedOut) {
+        std::lock_guard<std::mutex> g(m_);
+        droppedOut = dropped_;
+        dropped_ = 0;
+        std::deque<std::string> out;
+        out.swap(q_);
+        return out;
+    }
+
+private:
+    static constexpr usize kCap = 1024;
+
+    std::mutex m_;
+    std::deque<std::string> q_;
+    u64 dropped_ = 0;
+    int wake_ = -1;
+};
+
+bool setNonBlocking(int fd) noexcept {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+/// 연결 하나를 끝까지 본다. **읽기와 쓰기를 같이 기다린다**(poll) —
+/// 그래야 요청이 없는 동안에도 서버가 먼저 줄을 밀어낼 수 있다(docs/07 3절).
+void serveConnection(agent::AgentSession& session, int fd, bool& quit, std::ostream& err) {
+    int wake[2] = {-1, -1};
+    if (::pipe(wake) != 0) {
+        err << "serve: 깨움 파이프를 만들 수 없다 — 이 연결은 푸시 없이 돈다\n";
+    }
+    (void)setNonBlocking(fd);
+    if (wake[0] >= 0) {
+        (void)setNonBlocking(wake[0]);
+        (void)setNonBlocking(wake[1]);
+    }
+
+    PushOutbox outbox(wake[1]);
+    // 🔴 `events.subscribe` 전에는 밀지 않는다. 구독은 능력 계층의 상태이고,
+    //    그것을 읽는 것은 서브 루프 스레드다 — 구독자 스레드가 세션을 읽으면 경주가 된다.
+    //    그래서 원자 플래그 한 칸으로 넘긴다.
+    std::atomic<bool> pushOn{false};
+    u64 subId = 0;
+    if (wake[0] >= 0) {
+        subId = session.subscribePush({}, [&outbox, &pushOn](const std::string& kind,
+                                                             const Json& data) {
+            if (!pushOn.load(std::memory_order_relaxed)) {
+                return;
+            }
+            outbox.offer(pushLine(kind, data));
+        });
+    }
+
+    std::string inbuf;
+    std::string outbuf; ///< 아직 못 보낸 바이트(응답 + 푸시가 섞인다)
+    u64 pendingDropped = 0;
+    bool peerGone = false;
+    // 상대가 안 읽고 있는데 요청만 계속 밀어 넣으면 outbuf 가 무한히 자란다.
+    // 그 선을 넘으면 **읽기를 쉰다** — 요청을 안 받으면 응답도 안 늘어난다.
+    constexpr usize kMaxPending = 4u * 1024u * 1024u;
+
+    while (!(peerGone || (quit && outbuf.empty()))) {
+        pollfd fds[2];
+        fds[0].fd = fd;
+        fds[0].events = 0;
+        if (!quit && outbuf.size() < kMaxPending) {
+            fds[0].events |= POLLIN;
+        }
+        if (!outbuf.empty()) {
+            fds[0].events |= POLLOUT;
+        }
+        fds[0].revents = 0;
+        fds[1].fd = wake[0];
+        fds[1].events = POLLIN;
+        fds[1].revents = 0;
+        const nfds_t count = wake[0] >= 0 ? 2 : 1;
+
+        if (::poll(fds, count, -1) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        // ① 밀린 푸시를 꺼내 나갈 줄에 붙인다.
+        if (count == 2 && (fds[1].revents & POLLIN) != 0) {
+            char sink[256];
+            while (::read(wake[0], sink, sizeof(sink)) > 0) {
+                // 깨움 바이트는 세지 않는다. 몇 번 깨웠는지는 정보가 아니다
+            }
+            u64 dropped = 0;
+            std::deque<std::string> lines = outbox.take(dropped);
+            pendingDropped += dropped;
+            for (std::string& line : lines) {
+                if (pendingDropped != 0) {
+                    // 놓친 게 있으면 **다음에 나가는 줄에 그 숫자를 달아 보낸다.**
+                    // 줄을 다시 만드는 게 아니라 이미 만든 줄에 키를 얹는다.
+                    Result<Json> parsed = Json::parse(line);
+                    if (parsed.ok() && parsed.value().isObject()) {
+                        Json j = parsed.value();
+                        j.set("dropped", Json::integer(static_cast<i64>(pendingDropped)));
+                        line = j.dump();
+                        pendingDropped = 0;
+                    }
+                }
+                outbuf += line;
+                outbuf.push_back('\n');
+            }
+        }
+
+        // ② 요청을 읽어 응답을 만든다.
+        if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+            char chunk[4096];
+            for (;;) {
+                const ssize_t got = ::read(fd, chunk, sizeof(chunk));
+                if (got > 0) {
+                    inbuf.append(chunk, static_cast<usize>(got));
+                    continue;
+                }
+                if (got == 0) {
+                    peerGone = true; // EOF
+                }
+                if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    break; // 지금 읽을 게 없다
+                }
+                if (got < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (got < 0) {
+                    peerGone = true;
+                }
+                break;
+            }
+            for (;;) {
+                const usize nl = inbuf.find('\n');
+                if (nl == std::string::npos) {
+                    break;
+                }
+                const std::string line = inbuf.substr(0, nl);
+                inbuf.erase(0, nl + 1);
+                if (line.find_first_not_of(" \t\r") == std::string::npos) {
+                    continue;
+                }
+                outbuf += handleRpcLine(session, line, &quit);
+                outbuf.push_back('\n');
+                // 🔴 구독 상태는 **요청을 처리한 이 스레드가** 읽어서 넘긴다.
+                pushOn.store(session.subscribed(), std::memory_order_relaxed);
+                if (quit) {
+                    break;
+                }
+            }
+        }
+
+        // ③ 나갈 바이트를 보낸다. 상대가 안 읽으면 남겨 두고 다음 poll 을 기다린다.
+        while (!outbuf.empty()) {
+            const ssize_t w = ::write(fd, outbuf.data(), outbuf.size());
+            if (w > 0) {
+                outbuf.erase(0, static_cast<usize>(w));
+                continue;
+            }
+            if (w < 0 && errno == EINTR) {
+                continue;
+            }
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                break;
+            }
+            peerGone = true;
+            break;
+        }
+    }
+
+    // 🔴 구독자 스레드를 **먼저** 합류시킨다. outbox 와 pushOn 이 이 스코프의 값이므로,
+    //    떼기 전에 돌아가면 죽은 객체를 건드리게 된다.
+    if (subId != 0) {
+        (void)session.unsubscribePush(subId);
+    }
+    if (wake[0] >= 0) {
+        ::close(wake[0]);
+        ::close(wake[1]);
+    }
+}
+
+} // namespace
+
 Result<void> serveTcp(agent::AgentSession& session, const ServeAddress& addr, std::ostream& err,
                       const std::function<void(u16)>& onReady) {
     const int listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -216,7 +449,8 @@ Result<void> serveTcp(agent::AgentSession& session, const ServeAddress& addr, st
     }
     // 🔴 배너도 stderr 로 간다. stdout 은 끝까지 순수 JSON 이다.
     err << "listening " << addr.host << ":" << boundPort
-        << " (한 줄 = 요청 하나. {\"op\":\"quit\"} 으로 멈춘다)\n";
+        << " (한 줄 = 요청 하나. events.subscribe 하면 push:true 줄이 밀려온다. "
+           "{\"op\":\"quit\"} 으로 멈춘다)\n";
     if (onReady) {
         onReady(boundPort);
     }
@@ -232,41 +466,7 @@ Result<void> serveTcp(agent::AgentSession& session, const ServeAddress& addr, st
             closeFd(listenFd);
             return Err("accept 실패: " + why, ErrorCode::IoError);
         }
-        std::string buf;
-        char chunk[4096];
-        bool peerGone = false;
-        while (!peerGone && !quit) {
-            const ssize_t got = ::read(fd, chunk, sizeof(chunk));
-            if (got <= 0) {
-                break;
-            }
-            buf.append(chunk, static_cast<usize>(got));
-            for (;;) {
-                const usize nl = buf.find('\n');
-                if (nl == std::string::npos) {
-                    break;
-                }
-                const std::string line = buf.substr(0, nl);
-                buf.erase(0, nl + 1);
-                if (line.find_first_not_of(" \t\r") == std::string::npos) {
-                    continue;
-                }
-                std::string reply = handleRpcLine(session, line, &quit);
-                reply.push_back('\n');
-                usize sent = 0;
-                while (sent < reply.size()) {
-                    const ssize_t w = ::write(fd, reply.data() + sent, reply.size() - sent);
-                    if (w <= 0) {
-                        peerGone = true;
-                        break;
-                    }
-                    sent += static_cast<usize>(w);
-                }
-                if (peerGone || quit) {
-                    break;
-                }
-            }
-        }
+        serveConnection(session, fd, quit, err);
         closeFd(fd);
     }
     closeFd(listenFd);

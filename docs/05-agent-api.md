@@ -148,6 +148,10 @@ AI가 JSON 트리를 파싱하는 것보다 싸고 정확하다.
 긴 작업(큰 필터, 8bf 플러그인)은 진행률을, 사람이 동시에 그리면 그 사건을 흘려보낸다.
 Sigan에 쓰는 `IMariEventSink`와 **같은 이벤트 버스**를 쓴다. 두 번 만들지 않는다.
 
+구현과 한계는 [07-streaming.md](./07-streaming.md). 한 줄로: 버스는 하나인데 **정책이 둘**이다 —
+🔴 Sigan 기록 경로는 동기·무큐라 드롭이 **불가능**하고, 관찰(구독) 경로만 넘칠 때
+**그 구독자 하나**를 요약하거나 끊는다. 느린 구독자가 붓을 붙잡는 일은 없다.
+
 ### 2.8 헤드리스는 기본값 — 같은 바이너리, 같은 코드 경로
 
 ```bash
@@ -191,13 +195,29 @@ enum class StrokeOrigin {
 
 ### 3.2 인증서는 비율을 정직하게 보여준다
 
+> 🔴 **2026-09-17 정정(docs/06 결정 ②).** 아래 한 줄로 쓰여 있던 옛 문구
+> — `사람 획 1,847 / AI 획 213 (10.3%)` — 는 이 규약에서 **거짓에 가깝다.**
+> `fill` 한 번으로 캔버스 전체를 칠해도 "AI 획 1개"가 되기 때문이다.
+> 붓질과 광역 연산을 같은 칸에 세는 순간 단위가 거짓이 된다(docs/06 6절 H3).
+
 ```
-이 작품: 사람 획 1,847 / AI 획 213 (10.3%)
-         AI 개입: 밑색 채우기, 배경 그라데이션
+이 작품
+  붓질      사람 1,847  /  AI 213          (AI 10.3%)
+  영역 연산 사람 0      /  AI 2            (fill 1, gradient 1)
+  변경 타일 사람 4,210  /  AI 18,364       (AI 81.3%)
+  AI 식별자 claude-opus-5
 ```
+
+**세 축을 다 보여준다. 고르지 않는다.** 획 수만 세면 캔버스 전체를 칠한 AI 가
+"0.05%"가 되고, 면적만 세면 배경 그라데이션 하나가 사람의 선화 1,847획을 지운다 —
+둘 다 참이고 둘 다 불완전하다. 세 축을 가중합한 단일 "기여도"도 만들지 않는다:
+가중치를 고르는 순간 그것이 판정이고, 판정은 Sigan 의 몫이다(docs/03 2절).
 
 숨기지 않는다. 낙인찍지도 않는다. **사실만 적는다.**
 Sigan 문서 08의 원칙 그대로 — *"막을 게 아니라 정직하게 드러낸다."*
+
+세 축의 원자료는 `doc.origins` 연산(MCP 도구 `doc_origins`)과
+CLI `--proof-out` 이 떨구는 `mari/prooflog.json` 이 그대로 내놓는다.
 
 ### 3.3 이게 오히려 기회다
 
@@ -217,7 +237,7 @@ Mari + Sigan은 이걸 줄 수 있는 유일한 조합이 된다.
 
 ## 4. API 표면 (초안)
 
-> 아래는 **구현된 연산 표 그대로**다(`agent::opTable()`, 37개).
+> 아래는 **구현된 연산 표 그대로**다(`agent::opTable()`, **38개**).
 > 이 문서가 정본이 아니다 — **코드의 표가 정본이고 이 표가 그것을 따라간다.**
 > `capabilities` 연산이 런타임에 같은 것을 내보내므로, 어긋나면 코드 쪽이 맞다.
 
@@ -227,16 +247,20 @@ Mari + Sigan은 이걸 줄 수 있는 유일한 조합이 된다.
 | 스냅샷 | `snapshot` `restore` `branch` `diff` | |
 | 레이어 | `layer.list` `layer.add` `layer.remove` `layer.move` `layer.duplicate` `layer.merge` `layer.setProps` | |
 | 그리기 | `stroke` `fill` `erase` `gradient` `transform` | `transform` 은 **정수 평행이동만.** `scale`/`rotate` 는 리샘플러가 없어 거절한다 |
-| 선택 | `select` `select.expand` / ~~`select.invert`~~ ~~`select.feather`~~ | 🔴 선택 모델이 **사각형 하나뿐**이다. 반전·페더는 마스크 저장소가 없어 **미지원으로 표시**되고 MCP 도구로도 나가지 않는다 |
+| 선택 | `select` `select.invert` `select.expand` `select.feather` | ✅ **마스크 저장소가 들어왔다**(`core/selection.hpp`). `select` 이 `mode`(rect·ellipse·lasso·color·content·alpha)와 `combine`(replace·add·subtract·intersect·xor)을 받고, 반전·팽창·페더가 실제로 돈다. 넷 다 MCP 도구로 나간다 |
 | 브러시 | `brush.list` `brush.import`(.abr/.sut) `brush.set` `brush.describe` | |
 | 시각 | `render` `thumbnail` `compare` | |
 | 일괄 | `batch` (원자적) | |
-| 이벤트 | `events.subscribe` `events.unsubscribe` `events.poll` | 초안에 `poll` 이 빠져 있었다. 폴링 없이는 큐를 꺼낼 길이 없어 실제로는 필요했다 |
+| 이벤트 | `events.subscribe` `events.unsubscribe` `events.poll` | 초안에 `poll` 이 빠져 있었다. 폴링 없이는 큐를 꺼낼 길이 없어 실제로는 필요했다. **푸시가 생긴 뒤에도 셋 그대로다** — 푸시는 전송 계층에서 일어나고 능력 표를 늘리지 않는다(docs/07 3절) |
 
 **전부 MCP 도구로 자동 노출된다.** MCP 서버는 이 표를 읽어서 도구 목록을 생성할 뿐,
 따로 손으로 유지하지 않는다. (2.6 자기 설명과 같은 뿌리)
 단 **미지원 연산은 도구로 내보내지 않는다** — 주면 AI 가 반드시 한 번 불러 보고 실패한다.
-그래서 지금 도구는 37개가 아니라 **35개**이고, 빠진 둘의 이유는 `capabilities` 가 말해 준다.
+그 장치는 그대로 있지만, **지금 이 빌드에는 미지원 연산이 하나도 없다.** 빠져 있던 둘
+(`select.invert` · `select.feather`)이 선택 마스크와 함께 들어왔기 때문이다.
+그래서 연산 38개 = 도구 38개다. `tests/mcp/test_mcp.cpp` 가 그 수를 출력하고,
+"미지원이면 도구로 안 나간다"는 불변식은 표를 훑는 방식으로 남아 있다 —
+**이름을 박아 두지 않는다.** 박아 두면 기능이 는 순간 테스트가 거짓을 지키게 된다.
 
 ---
 
@@ -289,11 +313,11 @@ parity 는 유지된다. 지금 말할 수 있는 건 그것이고, "GUI 와 맞
 | 단계 | 내용 | 시점 | 현황 (2026-09-17, Linux) |
 |---|---|---|---|
 | **A0** | `StrokeOrigin` + 서명 포함 | **M1과 동시** — 나중에 넣으면 포맷이 굳는다 | ✅ `include/mari/core/origin.hpp` · 프레임 오프셋 56 |
-| **A1** | agent-api 코어 (batch·snapshot·render) | M2 | ✅ `agent/` 10개 소스 · 연산 37개 |
+| **A1** | agent-api 코어 (batch·snapshot·render) | M2 | ✅ `agent/` 10개 소스 · **연산 38개** |
 | **A2** | 헤드리스 모드 + CLI | M2 | ✅ `mari-paint` 실행파일이 Linux 에서 실제로 돈다 |
-| **A3** | MCP 서버 어댑터 | M3 | ✅ `--mcp --stdio` · 도구 35개가 표에서 생성된다 |
+| **A3** | MCP 서버 어댑터 | M3 | ✅ `--mcp --stdio` · **도구 38개**가 표에서 생성된다(연산 표와 1:1) |
 | **A4** | 시맨틱 주소 + `describe` | M4 | ✅ 이름·역할 태그·`content:nonEmpty` · `doc.describe` |
-| **A5** | JSON-RPC 원격 | M5 | ⚠️ `--serve` 로 **TCP 루프백 한 줄 왕복**까지. 인증도, 동시 세션도, WebSocket 도 없다 |
+| **A5** | JSON-RPC 원격 | M5 | ⚠️ `--serve` 로 TCP 루프백 왕복 + **서버 푸시**(docs/07)까지. 인증도, 동시 세션도, WebSocket 도 **여전히 없다** |
 
 **A0를 M1에 못 박는 이유:** origin이 서명 정본에 들어가야 하는데,
 Sigan의 서명 포맷은 한 번 배포되면 **하위 호환 때문에 못 바꾼다.**
@@ -327,26 +351,87 @@ docs/03 8절이 경고한 그대로 — `:src`를 넣을 수 있었던 건 "아�
 | 발행기가 **유실 없이 기록한다** | `no_frame_drop` · `published == sent + spooled` |
 | **없는 것** | 에이전트가 그린 획을 `SiganPublisher` 로 넘기는 배선 |
 
-그래서 3.2 의 "이 작품: 사람 획 1,847 / AI 획 213" 은 **아직 인증서에 못 찍힌다.**
-지금 나오는 것은 세션 안의 집계(`StrokeOriginStats`)뿐이고,
-CLI 가 실행 끝에 그 숫자를 stdout 으로 돌려준다(`run_ops_always_reports_stroke_origins`).
-그건 세션 로컬 숫자이지 서명될 기록이 아니다.
+> 🔴 **2026-09-17 해소.** 위 표의 "없는 것"은 이제 있다. 배선은
+> `record/src/sigan_recorder.cpp` 한 곳이고, `app`·`agent` 는 여전히 sigan 을
+> 링크하지 않는다(중립 인터페이스 `agent::IStrokeRecorder` 만 안다).
+> `tests/record/test_recording.cpp` 가 agent-api 획·사람 획이 발행기까지 도달하는 것을
+> 종단으로 검사하고, `single_publish_path` 가 **발행 지점이 하나임**을 강제한다.
+>
+> `fill` · `erase` · `gradient` · `transform` 의 "획 하나 = 프레임 하나" 문제도
+> docs/06 결정 ① 로 정해졌다: **합성 프레임 쌍**(`Down|Synthetic` 좌상단,
+> `Up|Synthetic` 우하단)으로 나가고, 붓질 수와 **다른 칸**에 센다.
+> 아래 옛 문단은 그 전의 상태를 적은 것이다.
 
-또 하나: `fill` · `erase` · `gradient` 는 `countStroke()` 로 **집계에는 잡히지만**
-스트로크 프레임을 만들지 않는다(타일에 직접 쓴다). 배선을 넣을 때
-"획 하나 = 프레임 하나"를 어떻게 맞출지 정해야 한다. 지금 정하지 않은 상태다.
+~~그래서 3.2 의 "이 작품: 사람 획 1,847 / AI 획 213" 은 아직 인증서에 못 찍힌다.~~
+~~또 하나: `fill` · `erase` · `gradient` 는 `countStroke()` 로 집계에는 잡히지만~~
+~~스트로크 프레임을 만들지 않는다. "획 하나 = 프레임 하나"를 어떻게 맞출지 정해야 한다.~~
 
-### 8.2 2.7 스트리밍은 **폴링이다**
+### 8.2 ~~2.7 스트리밍은 폴링이다~~ → **인프로세스·`--serve` 는 진짜 푸시다. MCP 만 폴링이다**
 
-설계는 "흘려보낸다"고 썼지만 구현은 `events.subscribe` → `events.poll` 로 큐를 꺼내는
-**요청/응답**이다. 서버가 먼저 밀어 주는 경로는 없다. `--serve` 도 한 줄 요청에 한 줄
-응답이라 푸시가 들어갈 자리가 아직 없다.
+원래 이 절은 "서버가 먼저 밀어 주는 경로는 없다"였다. 지금은 아니다 —
+설계·구현·한계는 [07-streaming.md](./07-streaming.md) 가 정본이고, 요약은 이렇다:
 
-### 8.3 2.4 시맨틱 주소 중 **선택(selection)** 은 사각형 하나뿐이다
+| 표면 | 상태 |
+|---|---|
+| 인프로세스 | ✅ `EventHub::subscribe(fn)` · `AgentSession::subscribePush(...)` — 콜백으로 밀어받는다 |
+| `--serve` TCP | ✅ 연결 유지 + `{"push":true,...}` JSON Lines 푸시. 진짜 소켓으로 검증한다 |
+| MCP stdio | ⚠️ **폴링 그대로.** 되는 척하지 않는다 — 아래 |
 
-`{ "region": { "selection": "current" } }` 는 동작하지만, 그 "current" 가 담을 수 있는
-것은 사각형 하나다. 올가미·색상 선택·반전·페더는 **마스크 저장소가 없어서** 못 한다.
-`select.invert` 와 `select.feather` 가 미지원으로 표시된 이유가 이것이다(4절).
+**MCP 가 폴링으로 남은 이유**(docs/07 5절): MCP 에는 응용 이벤트를 **모델에게** 밀어 넣는
+채널이 없다. `notifications/progress` 는 진행 중인 요청에 묶이고, `resources/updated` 는
+내용 없이 "바뀌었다"만 알려 클라이언트가 다시 읽어야 하며(폴링에 왕복만 추가된다),
+`notifications/message` 는 로그 채널이라 클라이언트가 모델에게 보여 줄 의무가 없다.
+그래서 MCP `initialize` 안내문에 **"이벤트는 밀어 주지 못한다. events_poll 로 당겨 가라"**
+라고 적어 둔다. 규약이 바뀌면 붙일 자리는 이미 있다 — 같은 세션이므로 `subscribePush()`
+한 줄이다.
+
+버스는 **하나 그대로다.** Sigan 기록(docs/03 4절 `IMariEventSink` 의 중립 절반)과
+에이전트 푸시가 같은 `EventHub` 의 같은 `fire*` 에서 갈라진다. 다만 정책이 둘로 갈렸다 —
+🔴 **기록 경로는 동기·무큐라 드롭이 불가능하고**(docs/03 4.2), 관찰 경로만 넘칠 때
+그 구독자 하나를 요약하거나 끊는다. `slow_subscriber_drop_never_touches_the_sigan_record`
+가 이 분리를 실측한다.
+
+`events.poll` 은 없애지 않았다. 푸시를 읽을 생각이 없는 클라이언트가 여전히 있고,
+연산 표는 하나도 늘지 않았다 — **푸시는 전송 계층의 일이지 능력이 아니다.**
+
+### 8.3 ~~2.4 시맨틱 주소 중 **선택(selection)** 은 사각형 하나뿐이다~~ → **마스크가 들어왔다**
+
+원래 이 절은 이랬다: "`{ "region": { "selection": "current" } }` 는 동작하지만,
+그 'current' 가 담을 수 있는 것은 사각형 하나다. 올가미·색상 선택·반전·페더는
+**마스크 저장소가 없어서** 못 한다."
+
+지금은 `include/mari/core/selection.hpp` 의 `SelectionMask` 가 그 저장소다.
+캔버스와 **같은 구조**를 쓴다 — 64×64 Gray8 타일의 희소 맵(COW). 새 자료구조는 없다.
+
+| | 되는 것 | 어디서 증명하나 |
+|---|---|---|
+| 만들기 | 사각형 · 타원 · 올가미(폴리곤, 짝수-홀수) · 색상 범위 · 내용(nonEmpty) · 레이어 알파 | `tests/core/test_selection.cpp` · `tests/agent/test_selection.cpp` |
+| 결합 | union · subtract · intersect · xor (`combine` 파라미터) | 〃 |
+| 변형 | invert · expand/contract(**원형**) · feather(가우시안 σ=radius/2) | 〃 |
+| 적용 | `stroke` · `fill` · `erase` · `gradient` 가 전부 마스크를 존중한다 | `nothing_is_drawn_outside_the_selection` |
+
+**🔴 세 가지는 숨기지 않는다.**
+
+1. **전체 선택·빈 선택은 타일 0개다.** 타일이 없는 자리의 값을 0 이 아니라
+   `outsideValue()` 로 두었기 때문이다. 그래서 반전도 O(타일 수)이고 캔버스를
+   할당하지 않는다(`invert_does_not_allocate_the_canvas`).
+2. **선택이 없으면 그리기 비용이 0 만큼 는다.** 엔진이 `beginStroke()` 에서 `isAll()` 을
+   한 번 보고 포인터를 꺼 버린다. 측정치는 `bench_selection_is_free_when_there_is_no_selection`
+   가 매 실행마다 찍는다 — **6회 실행 실측**으로 선택 없음 대비 전체 선택 마스크
+   **−2.3% ~ +2.1%**(같은 코드 경로라 부호가 회차마다 바뀐다 = 잡음),
+   진짜 마스크를 물렸을 때만 **+8.2% ~ +18.2%**. 셋째 숫자를 감추지 않는다:
+   규약은 "선택이 **없을 때** 0"이지 "언제나 0"이 아니다.
+
+   > 🔴 **2026-09-17 정정.** 여기 적혀 있던 옛 폭 — 전체 선택 "±0.5% 안",
+   > 진짜 마스크 "+16~21%" — 은 3회 실행의 최솟값이라 **실제보다 좁았다.**
+   > 6회를 재니 위와 같다. 좁은 폭을 두면 다음 사람이 잡음을 회귀로 읽는다.
+3. **브리지(COM)의 `selection()` 은 여전히 `Rect` 하나다.** 마스크의 **경계 상자**를
+   돌려준다. 사각형이 아닌 선택을 사각형으로 받아 가면 정보가 준다는 사실을 가리지 않으려고,
+   `select` 응답과 `doc.describe` 가 `kind`·`tiles`·`selectedPixels` 를 같이 적는다.
+   진짜 모양은 `Document::selectionMask()` 에 있다.
+
+아직 없는 것도 적는다: **선택은 `.ora` 에 저장되지 않는다.** 문서 세션 안에서만 산다
+(스냅샷/되돌리기는 탄다 — `selection_survives_snapshot_and_restore`).
 
 ### 8.4 1절 그림의 **COM · UI** 칸은 비어 있다
 

@@ -151,6 +151,9 @@ public:
             return Err("native 엔진은 아직 RGBA8 만 그린다", ErrorCode::Unsupported);
 
         ctx_ = ctx;
+        // 🔴 핫 패스 비용 0 규약: 선택을 **여기서 한 번만** 본다.
+        //    "제한 없음"(없거나 전체 선택)이면 포인터를 꺼서 stamp() 가 아예 묻지 않게 한다.
+        sel_ = (ctx.selection != nullptr && !ctx.selection->isAll()) ? ctx.selection : nullptr;
         rng_.seed(ctx.seed);
         hasLast_ = false;
         active_ = true;
@@ -235,6 +238,9 @@ public:
                         maxCov = std::max(maxCov, c);
                     }
                 }
+                // 선택 마스크를 커버리지에 곱한다. sel_ 이 null 이면 이 블록은 통째로 없다.
+                if (sel_ != nullptr && !applySelection(tc, px0, py0, w, h, maxCov))
+                    continue; // 선택 밖이라 잉크가 하나도 안 남았다
                 if (maxCov * alpha < kInkEpsilon)
                     continue; // 이 타일에는 아무것도 안 닿는다 — 만들지도 않는다
 
@@ -254,6 +260,7 @@ public:
     void endStroke(DirtyTiles&) noexcept override {
         active_ = false;
         hasLast_ = false;
+        sel_ = nullptr;
         ctx_.reset();
     }
 
@@ -375,6 +382,44 @@ private:
         return a + (b - a) * tyf;
     }
 
+    // ── 선택 마스크 ──────────────────────────────────────────────────────
+    /// 커버리지 버퍼에 선택 값을 곱한다. 남은 잉크가 있으면 true.
+    /// `maxCov` 를 곱한 뒤의 값으로 다시 채운다 — 안 그러면 "선택 밖인데 칠했다"가 된다.
+    [[nodiscard]] bool applySelection(TileCoord tc, i32 px0, i32 py0, i32 w, i32 h,
+                                      f32& maxCov) noexcept {
+        const u8* mask = sel_->tilePixels(tc);
+        const Size canvas = sel_->canvasSize();
+        if (mask == nullptr && sel_->outsideValue() == 255) {
+            // 이 타일은 통째로 선택 안쪽이다. 캔버스 안이기만 하면 손댈 게 없다.
+            if (px0 >= 0 && py0 >= 0 && px0 + w <= canvas.width && py0 + h <= canvas.height)
+                return true;
+        }
+        const i32 ox = tileOrigin(tc.tx);
+        const i32 oy = tileOrigin(tc.ty);
+        f32 newMax = 0.0f;
+        for (i32 y = 0; y < h; ++y) {
+            f32* row = cov_.data() + static_cast<usize>(y) * static_cast<usize>(w);
+            const i32 cy = py0 + y;
+            const u8* mrow =
+                mask != nullptr
+                    ? mask + static_cast<usize>(cy - oy) * static_cast<usize>(kTileSize)
+                    : nullptr;
+            const bool rowInCanvas = cy >= 0 && cy < canvas.height;
+            for (i32 x = 0; x < w; ++x) {
+                const i32 cx = px0 + x;
+                // 🔴 캔버스 밖은 선택되지 않는다 — 마스크가 있든 없든 같다.
+                u8 m = 0;
+                if (rowInCanvas && cx >= 0 && cx < canvas.width)
+                    m = mrow != nullptr ? mrow[static_cast<usize>(cx - ox)] : sel_->outsideValue();
+                const f32 v = row[x] * (static_cast<f32>(m) * (1.0f / 255.0f));
+                row[x] = v;
+                newMax = std::max(newMax, v);
+            }
+        }
+        maxCov = newMax;
+        return newMax > 0.0f;
+    }
+
     // ── 합성 ─────────────────────────────────────────────────────────────
     void blendTile(Tile& tile, i32 lx0, i32 ly0, i32 w, i32 h, f32 alpha) noexcept {
         u8* base = tile.mutablePixels();
@@ -460,6 +505,8 @@ private:
     ///    "일단 사람 획으로 만들어 두고 나중에 덮어쓴다"는 자리표시자를 두지 않으려는
     ///    것이다 — 그 자리표시자가 새면 AI 획이 사람 획이 된다(docs/05 3.1).
     std::optional<StrokeContext> ctx_;
+    /// 🔴 "제한 없음"이면 nullptr 이다. 핫 패스는 이 포인터 하나만 본다.
+    const SelectionMask* sel_ = nullptr;
     Rng rng_{};
     std::vector<f32> cov_;
     PointF lastPos_{};

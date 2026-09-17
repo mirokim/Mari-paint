@@ -3,6 +3,7 @@
 // docs/02 8절: 펜 입력 → 화면 표시 16ms. 여기서는 [1]~[4] 의 비용만 잰다.
 // 시간은 기계마다 다르므로 실패 기준으로 쓰지 않고 **회귀 감시용 기준선**으로 찍는다.
 // 대신 "스탬프 하나가 16ms 를 통째로 먹는다" 같은 명백한 붕괴는 잡는다.
+#include <mari/core/selection.hpp>
 #include <mari/stroke/native_engine.hpp>
 #include <mari/stroke/pipeline.hpp>
 #include <mari/test/harness.hpp>
@@ -160,6 +161,79 @@ MARI_TEST(bench_full_pipeline_per_event) {
     CHECK(stamps > 0u);
     // 이벤트 하나가 한 프레임(16ms)을 통째로 먹으면 제품이 죽는다.
     CHECK(ms / kEvents < 16.0);
+}
+
+// 🔴 선택 마스크가 들어와도 **선택이 없으면 스탬프 비용이 0 만큼 는다.**
+//
+// 근거는 코드가 아니라 수치여야 한다. 같은 일감을 세 번 잰다:
+//   A) 선택 포인터 없음            — 기존 경로
+//   B) 전체 선택 마스크를 붙임      — beginStroke() 가 isAll() 을 보고 포인터를 끈다
+//   C) 진짜 마스크를 붙임          — 여기서만 비용이 든다(그 값도 숨기지 않고 찍는다)
+// A 와 B 는 같은 기계어를 돌므로 차이가 측정 잡음 안이어야 한다.
+MARI_TEST(bench_selection_is_free_when_there_is_no_selection) {
+    constexpr int kStamps = 10000;
+    const Size canvas{2048, 2048};
+
+    // C 가 쓸 진짜 마스크 — 캔버스 절반을 덮는 사각형(타일이 실제로 생긴다).
+    auto realMask = SelectionMask::fromRect(canvas, Rect{0, 0, 2048, 1024});
+    CHECK(realMask.ok());
+    if (!realMask.ok()) {
+        return;
+    }
+    const SelectionMask allMask = SelectionMask::all(canvas);
+    CHECK(allMask.isAll());
+    CHECK_EQ(allMask.tileCount(), usize{0}); // 전체 선택은 메모리 0
+    CHECK(realMask.value().tileCount() > 0u);
+
+    const auto run = [&](const SelectionMask* sel) {
+        auto e = makeNativeEngine();
+        if (!e.ok() || !e.value()->setPreset(benchPreset(), nullptr).ok()) {
+            return 0.0;
+        }
+        FakeTileMap map;
+        DirtyTiles dirty;
+        dirty.reserve(4096);
+        brush::StrokeContext c = ctxFor(&map);
+        c.selection = sel;
+        if (!e.value()->beginStroke(c).ok()) {
+            return 0.0;
+        }
+        const auto once = [&](bool measure) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < kStamps; ++i) {
+                brush::StampInput in;
+                in.pos = PointF{20.0f + static_cast<f32>(i % 1000),
+                                20.0f + static_cast<f32>(i / 1000) * 30.0f};
+                in.pressure = 0.25f + 0.75f * static_cast<f32>(i % 100) / 99.0f;
+                e.value()->stamp(in, dirty);
+            }
+            dirty.clear();
+            return measure ? msSince(t0) : 0.0;
+        };
+        once(false); // 워밍업 — 타일 할당을 측정에서 뺀다
+        f64 best = 1e30;
+        for (int r = 0; r < 3; ++r) {
+            best = std::min(best, once(true)); // 최솟값 = 잡음이 가장 적은 회차
+        }
+        e.value()->endStroke(dirty);
+        return best;
+    };
+
+    const f64 msNone = run(nullptr);
+    const f64 msAll = run(&allMask);
+    const f64 msReal = run(&realMask.value());
+    CHECK(msNone > 0.0);
+    CHECK(msAll > 0.0);
+
+    const auto rate = [](f64 ms) { return ms > 0.0 ? kStamps / (ms / 1000.0) : 0.0; };
+    std::printf("  [BENCH] 선택 없음        : %.2f ms, %.0f 스탬프/초\n", msNone, rate(msNone));
+    std::printf("  [BENCH] 전체 선택 마스크 : %.2f ms, %.0f 스탬프/초 (선택 없음 대비 %+.1f%%)\n",
+                msAll, rate(msAll), (msAll / msNone - 1.0) * 100.0);
+    std::printf("  [BENCH] 실제 마스크      : %.2f ms, %.0f 스탬프/초 (선택 없음 대비 %+.1f%%)\n",
+                msReal, rate(msReal), (msReal / msNone - 1.0) * 100.0);
+
+    // 🔴 전체 선택은 **비용 0** 이어야 한다. 컨테이너 시계가 흔들리는 폭까지만 봐준다.
+    CHECK(msAll < msNone * 1.35);
 }
 
 MARI_TEST(hot_path_does_not_allocate) {

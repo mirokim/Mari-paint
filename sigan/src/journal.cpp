@@ -137,14 +137,24 @@ bool Journal::flush() noexcept {
         return false;
     }
     if (bufLen_ != 0) {
+        const usize want = bufLen_;
         const usize written = std::fwrite(buf_.data(), 1, bufLen_, fp_);
         bufLen_ = 0;
-        if (written == 0) {
+        // 🔴 **부분 쓰기도 실패다.** 반만 들어간 레코드는 기록이 아니다.
+        //    예전에는 written == 0 만 봤다 — 디스크가 도중에 찬 경우를 놓친다.
+        if (written != want) {
             failed_ = true;
             return false;
         }
     }
-    return std::fflush(fp_) == 0;
+    // 🔴 fflush 실패를 failed_ 로 남긴다. 이걸 빠뜨리면 "쓴 줄 알았는데 아무 것도
+    //    안 남은" 상태가 조용히 계속된다 — 가장 조용하고 가장 큰 거짓이다
+    //    (docs/06 6절 H1). 정직한 실패가 조용한 성공보다 낫다.
+    if (std::fflush(fp_) != 0) {
+        failed_ = true;
+        return false;
+    }
+    return true;
 }
 
 Result<JournalScan> Journal::scan(const std::string& path) {

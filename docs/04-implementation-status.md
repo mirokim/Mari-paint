@@ -14,29 +14,52 @@
 
 ```
 빌드   : g++ 13.3 ✅  ·  clang 18 ✅   (경고 0 · 오류 0)
-테스트 : 47개 실행파일 / 375 케이스 — 양쪽 컴파일러에서 100% 통과
-         skip·disable 한 테스트 없음
+테스트 : 55개 실행파일 / 425 케이스 — 양쪽 컴파일러에서 100% 통과
+         skip·disable 한 테스트 없음   (2026-09-17 클린 빌드 재검증: 55/55 · 경고 0)
 ```
 
 | 모듈 | ctest 실행파일 | 상태 |
 |---|---|---|
 | foundation | 5 | ✅ 검증됨 |
-| core | 5 | ✅ 검증됨 |
+| core | 6 | ✅ 검증됨 (**선택 마스크** 포함) |
 | stroke | 6 | ✅ 검증됨 |
 | io/ora | 3 | ✅ 검증됨 |
 | io/brush | 4 | ✅ 검증됨 |
 | sigan | 7 | ✅ 검증됨 (Windows 파이프 분기만 미검증) |
 | crypto | 2 | ✅ 검증됨 (NIST 벡터 · 해시 규약) |
-| app | 1 | ✅ 검증됨 (플랫폼 중립 브리지 구현체) |
-| agent | 4 | ✅ 검증됨 (docs/05 능력 계층) |
+| app | 2 | ✅ 검증됨 (플랫폼 중립 브리지 구현체 · **이벤트 버스 푸시·역압**) |
+| agent | 6 | ✅ 검증됨 (docs/05 능력 계층 · 세션 푸시 구독 · **선택 마스크 적용**) |
 | mcp | 1 | ✅ 검증됨 (도구 목록은 연산 표에서 생성) |
-| cli | 4 | ✅ 검증됨 (실행파일 왕복 · `headless_parity` · docs/02 8절 실측) |
+| cli | 5 | ✅ 검증됨 (실행파일 왕복 · `headless_parity` · docs/02 8절 실측 · **`--serve` 푸시 실소켓**) |
 | win | 4 | ⚠️ Win32 비의존 부분만 |
 | integration | 1 | ✅ 검증됨 |
 
 ---
 
 ## 1. 구현됐고 Linux에서 실제로 검증된 것
+
+### 1.0a core — 선택 마스크 (docs/05 8.3 이 적어 둔 한계를 메웠다)
+
+선택이 **8비트 알파 마스크**가 됐다. 저장 구조는 캔버스와 같다 —
+64×64 Gray8 타일의 희소 맵(COW). 새 자료구조를 만들지 않았다.
+
+```
+tests/core/test_selection.cpp :: full_and_empty_selection_allocate_no_tiles
+  전체 선택도 빈 선택도 tileCount() == 0. 메모리를 한 바이트도 안 쓴다.
+  (타일이 없는 자리의 값을 0 이 아니라 outsideValue() 로 뒀기 때문이다)
+tests/core/test_selection.cpp :: invert_does_not_allocate_the_canvas
+  사각형 선택(타일 1개)을 반전해도 타일이 1개 그대로다. 캔버스 16타일을 잡지 않는다.
+```
+
+되는 것: 사각형 · 타원 · 올가미(폴리곤, 짝수-홀수) · 색상 범위 · 내용(nonEmpty) ·
+레이어 알파에서 만들기, union/subtract/intersect/xor 결합, 반전 · **원형** 팽창/수축
+(정확한 유클리드 거리 변환) · 가우시안 페더.
+
+🔴 **핫 패스 비용 0.** 엔진은 `beginStroke()` 에서 `isAll()` 을 한 번 보고 포인터를
+끈다. `tests/stroke/test_bench.cpp :: bench_selection_is_free_when_there_is_no_selection`
+가 같은 일감을 세 번 재서 숫자를 찍는다(아래 4절 6번).
+
+아직 안 되는 것도 적는다: **선택은 `.ora` 에 저장되지 않는다.** 문서 세션 안에서만 산다.
 
 ### 1.1 core — 타일 캔버스 (docs/02 3절)
 
@@ -126,6 +149,28 @@ Win32에 의존하지 않는 로직을 헤더로 분리해서 Linux에서 돌린
 | `tests/win/test_shm_layout.cpp` | 8bf 공유 메모리 구조체 바이트 레이아웃 고정 (x86 호스트와 x64 본체가 같은 바이트를 봐야 한다) |
 | `tests/win/test_pipl.cpp` | PIPL 리소스 파서 — 적대적/잘린 입력 방어 |
 
+### 1.6a 이벤트 푸시 — 진짜 스트리밍 (docs/05 2.7 → docs/07)
+
+`events.poll` 밖에 없던 자리에 **서버 푸시**가 생겼다. 버스는 늘리지 않았다 —
+Sigan 기록이 쓰는 `mari::app::EventHub` 하나에 관찰 경로를 덧댔다(docs/07 1절).
+
+```
+addListener(ptr)  → 기록 경로: 동기 · 큐 없음 · 🔴 드롭 불가 (Sigan · COM · 세션 폴링 큐)
+subscribe(fn)     → 관찰 경로: 구독자마다 스레드+유한 큐 · 넘치면 그 구독자만 요약/절단
+```
+
+- **인프로세스**: `EventHub::subscribe(fn)` · `AgentSession::subscribePush(kinds, fn)`.
+- **`--serve`**: 연결을 유지하고 `{"push":true,"event":{...}}` 줄을 밀어낸다.
+  `poll(2)` 로 소켓과 아웃박스를 함께 기다린다. **진짜 fd 로 검증된다.**
+- **MCP**: ⚠️ 폴링 그대로. 규약에 응용 이벤트를 모델에게 밀어 넣는 채널이 없다(docs/07 5절).
+  안내문에 그 사실을 적어 둔다 — 있는 척하지 않는다.
+- 이벤트 종류는 docs/03 4절 표 8종 + `progress` 하나. 전부 `seq` 를 달고 다녀서
+  요약당한 구독자가 **몇 건을 놓쳤는지 스스로 안다.**
+
+🔴 제일 중요한 케이스: `slow_subscriber_drop_never_touches_the_sigan_record` —
+구독자를 일부러 막고 300건을 쏴도 `SiganPublisher` 는 300/300 이고 seq 구멍이 0 이다.
+같은 실행에서 구독자는 `summarized > 0` 이다. 한쪽은 버렸고 한쪽은 안 버렸다.
+
 ### 1.7 integration — 모듈 간 이음매
 
 `tests/integration/test_endtoend.cpp` 4 케이스. 각 모듈 테스트는 가짜(`FakeTileMap`,
@@ -175,13 +220,15 @@ Windows 빌드 잡은 `.github/workflows/ci.yml` 에 **작성돼 있다.** 그 �
 
 | 항목 | 설계 위치 | 메모 |
 |---|---|---|
+| 🔴 **사람의 실제 펜 입력** | docs/03 3절 · docs/06 결정 ③ | 기록 배선은 사람 경로를 **받을 준비가 끝났다**(`StrokeSource::humanPen()` → `app::StrokeEntry` → 같은 발행 지점). 그러나 그 입구에 점을 넣어 주는 것은 **테스트와 하네스뿐**이다. Windows Ink(WM_POINTER)는 2절에 있고 컴파일된 적이 없다. **"사람 획 기록이 된다"를 "실제 펜 입력이 된다"로 읽으면 안 된다** |
 | **UI (Qt 6)** | docs/02 2절 `ui/` | 리포에 Qt 코드 0줄. 그래서 docs/02 8절 중 **화면이 필요한 목표(펜 입력 → 화면 표시 16ms)는 여전히 측정 불가**다. 나머지 넷은 헤드리스로 실측했다(4절 6번). 헤드리스 CLI `mari-paint` 는 Linux 에서 실제로 돈다 — `--script` / `--exec` / `--serve` / `--mcp --stdio` / `--capabilities` |
-| **에이전트 획 → Sigan 배선** | docs/05 2.3 · 3.2 | 🔴 아래 4절 7번. origin 은 위조 불가하고 프레임 바이트 안에 있지만, **에이전트가 그린 획을 발행기로 넘기는 코드가 없다** |
+| ~~**에이전트 획 → Sigan 배선**~~ | docs/05 2.3 · 3.2 | ✅ **2026-09-17 완료.** `record/` 모듈이 잇는다 — 발행 지점은 `record/src/sigan_recorder.cpp` **하나뿐**이고 `app`·`agent` 는 여전히 sigan 을 링크하지 않는다. 규약은 docs/06, 검증은 `tests/record/` |
 | **libmypaint 어댑터** | docs/02 2절 `engines/mypaint` | 지금 엔진은 자체 `native` 하나. `createEngine()` 에 한 줄 더하면 붙는 자리는 만들어 뒀다 |
 | **.psd 읽기/쓰기** | docs/02 M3 | 시작 안 함 |
 | **색 관리 (LittleCMS)** | docs/02 2절 `color/` | 지금은 RGBA8 sRGB 고정. 16/32bit · CMYK 없음 |
 | **GPU 합성** | docs/02 M6 | 전부 CPU |
 | **레이어 마스크의 .psd/.ora 흡수** | — | 규약 자체가 미결(5절) |
+| **선택의 파일 저장** | — | `SelectionMask` 는 있지만 `.ora` 에 쓰지 않는다. 문서 세션 안에서만 산다(스냅샷/되돌리기는 탄다) |
 
 ---
 
@@ -192,6 +239,11 @@ Windows 빌드 잡은 `.github/workflows/ci.yml` 에 **작성돼 있다.** 그 �
    표를 넓힐지는 Sigan 쪽과 합의가 필요하다.
 2. **리포트 타입이 두 벌이다.** io/ora의 `Document::warnings` 는 `vector<string>` 이고,
    io/brush의 `ImportReport` 는 severity/key/message 구조다. io 공용으로 올리는 게 맞다.
+2-1. ~~**선택은 사각형 하나뿐.** 마스크 저장소가 없어 `select.invert`·`select.feather` 는
+   미지원 표시 + MCP 도구 미노출.~~ → **해결됐다.** `include/mari/core/selection.hpp`.
+   넷 다 supported 가 되어 MCP 도구가 **자동으로** 나타났다(도구 38개 = 연산 38개).
+   남은 한계는 둘이고 숨기지 않는다: ⓐ 선택이 `.ora` 에 저장되지 않는다,
+   ⓑ 브리지(COM)의 `selection()` 은 여전히 `Rect` 하나라 **경계 상자**만 넘어간다.
 3. **레이어 마스크 규약이 미결.** 현재: 없는 타일 = 0 = 가림. **Krita와 반대다.**
    .ora/.psd 임포터가 이 차이를 흡수해야 하는데 아직 안 했다.
 4. **`duplicateLayer()`/`setLayerTiles()` 의 자리가 미결.** `layer_ops.hpp` 자유 함수로
@@ -202,28 +254,106 @@ Windows 빌드 잡은 `.github/workflows/ci.yml` 에 **작성돼 있다.** 그 �
    `tests/cli/headless_main.cpp` 가 매 ctest 마다 재고 숫자를 출력하며, 목표를 넘기면
    **테스트가 깨진다**(CI 게이트가 생겼다는 뜻이다). 아래는 g++ 13.3 · Linux 컨테이너 실측:
 
+   아래는 **2026-09-17 재측정**이다(g++ 13.3 · Linux 컨테이너 · RelWithDebInfo).
+
    | docs/02 8절 목표 | 목표치 | 실측 | 판정 |
    |---|---|---|---|
-   | 콜드 스타트 | < 1.5초 | **3.8 ms** (`--capabilities`, 5회 최소. 셸 경유 포함) | ✅ |
-   | 빈 캔버스 메모리 1920×1080 | < 150MB | **6.06 MB** (프로세스 전체 RSS. 문서 생성분은 0.36MB) | ✅ |
-   | 8K 캔버스 열기 | < 3초 | **550 ms** (8192² 전면 채색 .ora) | ✅ |
-   | 설치 용량 | < 80MB | **24.94 MB** (미스트립 RelWithDebInfo 실행파일 하나) | ⚠️ 부분 |
+   | 콜드 스타트 | < 1.5초 | **3.0 ms** (`--capabilities`, 5회 최소. 셸 경유 포함) | ✅ |
+   | 빈 캔버스 메모리 1920×1080 | < 150MB | **6.30 MB** (프로세스 전체 RSS. 세션+문서 증가분은 0.43MB) | ✅ |
+   | 8K 캔버스 열기 | < 3초 | **605 ms** (8192² 전면 채색 .ora) | ✅ |
+   | 설치 용량 | < 80MB | **29.36 MB** 미스트립 / **1.28 MB** strip 후 | ⚠️ 부분 |
    | 펜 입력 → 화면 표시 | < 16ms | **측정 불가** | 🔴 |
 
    ⚠️ **부분**과 🔴 를 흐리지 않는다:
-   · 설치 용량 24.94MB 는 **GUI·COM·8bf 호스트가 하나도 안 들어간** 빌드다. 붙으면 는다.
+   · 설치 용량 29.36MB 는 **GUI·COM·8bf 호스트가 하나도 안 들어간** RelWithDebInfo
+     빌드다. 대부분이 디버그 심볼이라 `strip` 하면 1.28MB 다. 붙으면 는다.
      zlib·sqlite3·libpng 는 시스템 공유 라이브러리라 여기 안 잡힌다.
+     (지난 회차 24.94MB → 29.36MB. 선택 마스크와 기록 배선이 들어왔다.)
    · 16ms 는 **화면이 없어서 절반만 잴 수 있다.** 잰 절반(입력 → 픽셀)은
-     agent-api 를 통과하는 점 하나당 **111.8 us**, 획(점 64개) 하나당 평균 7.2 ms 다.
+     agent-api 를 통과하는 점 하나당 **119.2 us**, 획(점 64개) 하나당 평균 **7.63 ms**,
+     최악 **16.07 ms** 다.
      표시 쪽을 붙이지 않은 숫자이므로 **"16ms 목표를 달성했다"고 쓰지 않는다.**
-   · 목표에 없던 값 하나가 눈에 띈다: **8K .ora 저장이 9.0초**다. 여는 건 550ms 인데
-     쓰는 게 16배 느리다(8192² PNG 디플레이트). 목표가 없어 통과/실패를 말할 수 없고,
+   · 목표에 없던 값 하나가 눈에 띈다: **8K .ora 저장이 8.9초**다. 여는 건 605ms 인데
+     쓰는 게 15배 느리다(8192² PNG 디플레이트). 목표가 없어 통과/실패를 말할 수 없고,
      그래서 게이트도 걸지 않았다. 숫자만 남긴다.
 
    `stroke_bench` 는 별개다 — UI·에이전트를 거치지 않은 순수 파이프라인 처리량이고
-   회귀 감지용이다: 스탬프 150,056개/초, 이벤트당 72.4 us, **2차 획 힙 할당 0회.**
+   회귀 감지용이다: 스탬프 **143,000~153,000개/초**, 이벤트당 **70 us**,
+   **2차 획 힙 할당 0회.**
+   (컨테이너라 회차마다 ±6% 흔들린다. 한 번의 수치를 정밀한 값처럼 적지 않는다)
 
-7. 🔴 **에이전트 획이 Sigan 으로 흘러가지 않는다.** docs/05 2.3 은 "Sigan 이 AI 획도
+   **선택 마스크 비용**(`bench_selection_is_free_when_there_is_no_selection`, **6회 실행**):
+
+   | 설정 | 스탬프 10,000개 | 선택 없음 대비 |
+   |---|---|---|
+   | 선택 없음(포인터 null) | 67.8 ~ 70.0 ms | 기준 |
+   | 전체 선택 마스크를 붙임 | 67.0 ~ 69.9 ms | **−2.3% ~ +2.1%** (같은 코드 경로다 — 잡음) |
+   | 진짜 마스크를 붙임 | 74.0 ~ 82.3 ms | **+8.2% ~ +18.2%** |
+
+   🔴 셋째 줄을 감추지 않는다. **선택을 실제로 쓰면 비용이 든다.** 규약은
+   "선택이 **없을 때** 0"이지 "언제나 0"이 아니다.
+
+   🔴 **지난 회차가 적어 둔 폭을 이번 실측이 고쳤다.** 옛 문구는 둘째 줄을
+   "−0.4% ~ −0.2%", 셋째 줄을 "+16% ~ +21%" 이라고 적었다. 3회 실행의 최솟값이었고
+   **폭이 실제보다 좁았다.** 6회를 재니 둘째 줄은 ±2.3% 안에서 부호가 바뀌고(잡음이
+   맞다 — 같은 코드 경로이므로 방향이 정해질 이유가 없다) 셋째 줄은 +8.2% 까지
+   내려온다. 좁은 폭을 그대로 두면 다음 사람이 잡음을 회귀로 읽는다.
+
+   **기록 배선 비용**(2048² 캔버스에 8점 획 2,000개, 3회 중 최선 · 리포 밖 하네스):
+
+   | 설정 | 시간 | 처리량 |
+   |---|---|---|
+   | 레코더 없음(널 레코더) | 761.6 ms | 2,626 획/초 |
+   | 로컬 저널 기록 | 756.7 ms | 2,643 획/초 (**−0.6%**) |
+
+   차이가 음수인 것은 잡음이라는 뜻이다. 저널 append 는 획당 64바이트 프레임 몇 개라
+   붓질 비용에 묻힌다. **다만 이건 CI 게이트가 아니다** — 하네스가 리포 밖에 있다.
+   게이트로 삼으려면 `tests/` 안으로 들여와야 하고, 아직 안 했다.
+
+7. ✅ **[2026-09-17 해소] 에이전트 획이 Sigan 으로 흘러간다.**
+   배선은 `record/` 모듈이고, 규약은 `docs/06-recording-contract.md` 다.
+   지금 서 있는 것:
+
+   | 잇는 겹 | 증명하는 테스트 |
+   |---|---|
+   | agent-api 획이 발행기까지 전부 도착하고 전부 `origin=Agent` | `agent_strokes_reach_the_publisher_as_agent` |
+   | 사람 경로 입구(`app::StrokeEntry`)가 **같은** 발행기로 간다 | `human_pen_path_reaches_the_same_publisher` |
+   | 섞어 그린 M/N 이 prooflog JSON 에 실제로 찍힌다 | `mixed_human_and_agent_counts_are_exact_in_the_prooflog` |
+   | `fill` 이 "AI 획 1개"로 축소되지 않는다(합성 프레임 쌍 + 다른 칸) | `fill_is_a_synthetic_frame_pair_not_a_brush_stroke` |
+   | 파이프가 끊겨도 그리기는 성공하고 유실 0 | `pipe_failure_still_draws_and_drops_nothing` |
+   | 저널이 고장 나면 연산 실패 + 캔버스 원상복구 | `journal_failure_rejects_the_draw_and_rolls_back` · `a_real_unwritable_journal_is_detected` |
+   | 레코더 없이도 agent-api 가 돈다(널 레코더) | `agent_api_works_without_any_recorder` |
+   | 구간을 만드는 것은 세션이 아니라 문서다 | `a_new_session_on_the_same_document_does_not_split_the_segment` |
+   | **발행 지점이 하나다** | `single_publish_path` · `neither_app_nor_agent_links_sigan` |
+
+   `fill`·`erase`·`gradient`·`transform` 의 프레임 표현도 정해졌다(docs/06 결정 ①):
+   `Down|Synthetic` 좌상단 + `Up|Synthetic` 우하단 **두 프레임**. 두 점이 영향 영역을
+   프레임 바이트 안에 담고, 붓질 수와는 **다른 칸**에 센다(docs/06 결정 ②).
+   아직 기록 밖인 것(붙여넣기·레이어 병합·실행취소)은 docs/06 10절에 적어 뒀다.
+
+   **테스트 말고 진짜 바이너리로도 돌려 봤다**(2026-09-17). 1024² 캔버스에
+   `--agent-id claude-opus-5` 로 `fill` 1 · 붓질 3 · `gradient` 1 을 넣고
+   `--journal-dir` · `--proof-out` 을 준 결과 `mari/prooflog.json` 의 실제 내용:
+
+   ```
+   "humanStrokes": 0, "agentStrokes": 3, "agentRegionOps": 2,
+   "changedTiles": {..., "agent": 326, "measured": true},
+   "frameCount": 13, "lostFrames": 0, "grade": "unsigned", "signed": false
+   strokes[0] : synthetic=true,  area 0,0 1024×1024   ← 캔버스 전면 fill
+   strokes[4] : synthetic=true,  area 0,900 1024×124  ← gradient
+   ```
+
+   🔴 **캔버스 전체를 칠한 `fill` 이 "AI 획 1개"가 되지 않았다.** 붓질 칸은 3 그대로이고
+   `fill` 은 `agentRegionOps` 라는 다른 칸에 있으며, 얼마나 넓었는지가 `area` 로 남았다
+   — docs/06 6절 H3 가 요구한 그대로다. 사람·AI 를 한 문서에 섞은 실측
+   (사람 붓질 12 / AI 붓질 4 / AI fill 1)에서는 `agentStrokeRatio: 0.250` 이고
+   변경 타일은 사람 24 / AI 267 이다. **붓질로는 25%, 면적으로는 91.7%** —
+   한 줄로 줄이지 않는 이유가 이 두 숫자다. README 의 "사람 획 · AI 획을 기록으로
+   남긴다" 절에 출력 전문이 있다.
+
+   <details><summary>옛 기록(배선이 없던 시절)</summary>
+
+   ~~**에이전트 획이 Sigan 으로 흘러가지 않는다.**~~ docs/05 2.3 은 "Sigan 이 AI 획도
    똑같이 기록한다"고 썼지만 **배선이 없다.**
    `grep -rn "Publisher\\|publish(" --include=*.cpp .` 의 호출자가 `sigan/` 과 `tests/`
    밖에 **0곳**이고, `agent/` `app/` `cli/` `mcp/` 어느 CMakeLists 도 `mari::sigan` 을
@@ -241,7 +371,17 @@ Windows 빌드 잡은 `.github/workflows/ci.yml` 에 **작성돼 있다.** 그 �
    돌려줄 뿐이다. 덧붙여 `fill`·`erase`·`gradient` 는 집계에는 잡히지만 스트로크 프레임을
    만들지 않는다(타일에 직접 쓴다) — 배선할 때 "획 하나 = 프레임 하나"를 어떻게 맞출지
    먼저 정해야 한다. 아직 안 정했다.
-7. **docs/03 10절 검증 8종 중 자동으로 도는 건 2개**(`canvas_xy_invariant`,
+
+   </details>
+8. **스트리밍의 절반은 아직 실측 대상이 없다.** 이벤트 푸시·역압은 Linux 에서 돌고
+   테스트가 덮는다(docs/07 8절) — 인프로세스 콜백과 `--serve` 푸시는 **진짜 소켓**으로
+   검증된다. 하지만 ⓐ **MCP 는 폴링 그대로**이고(규약에 응용 이벤트를 모델에게 밀어 넣는
+   채널이 없다. 이유는 docs/07 5절), ⓑ "사람이 그리는 동안 에이전트가 그 사건을 받는다"는
+   시나리오는 **사건을 만드는 사람 손이 없어서** 절반만 실측됐다(GUI 없음, 3절),
+   ⓒ `fireProgress` 를 실제로 부르는 긴 작업이 아직 없다 — 자리만 있다.
+   `--serve` 에 인증도 동시 연결도 없다는 사실은 푸시가 생겨도 그대로다.
+
+9. **docs/03 10절 검증 8종 중 자동으로 도는 건 2개**(`canvas_xy_invariant`,
    `wintab_never_loaded` — 후자는 Windows 잡이 돌아야). 나머지는 실제 Sigan 바이너리 ·
    펜 하드웨어 · VASE9 리포와의 공유 골든 픽스처가 필요하다. `ci.yml` 의
    `verification-matrix` 잡이 이 현황을 매 빌드마다 출력한다.
@@ -260,9 +400,10 @@ Windows 빌드 잡은 `.github/workflows/ci.yml` 에 **작성돼 있다.** 그 �
    docs/03 S3(`StartCanvasHash`/`EndCanvasHash` 가 v0 null 을 벗어나는 것)의 전제가
    이제 갖춰졌다. **계산만 한다 — 체인 봉인은 여전히 Sigan 몫이다.**
 3-1. **COM 래퍼 ↔ `mari::app` 어댑터.** 2절의 마지막 빈칸이다.
-3-2. 🔴 **에이전트 획 → `SiganPublisher` 배선.** 4절 7번. 이게 없으면 docs/05 3절 전체가
-   "위조할 수 없다"에서 멈추고 "정직하게 드러난다"까지 가지 못한다. 배선 전에
-   `fill`/`erase`/`gradient` 의 프레임 표현을 먼저 정해야 한다.
+3-2. ~~🔴 **에이전트 획 → `SiganPublisher` 배선.**~~ → **완료.** `record/` 모듈,
+   규약 docs/06. 남은 것은 H1 의 마지막 구멍 셋 — 붙여넣기(`importPixels`),
+   레이어 병합/삭제, 실행취소가 아직 기록 밖이다(docs/06 10절). 셋 다 결정 ① 의
+   합성 프레임 쌍 틀을 그대로 쓸 수 있다.
 4. **리포트 타입을 io 공용으로 올린다.**
 5. **UI 레이어(Qt)를 시작한다.** 성능 목표를 측정할 대상이 그때 생긴다.
 6. **libmypaint 어댑터.** 자리는 이미 있다.

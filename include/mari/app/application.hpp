@@ -6,6 +6,7 @@
 #include <mari/app/document.hpp>
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace mari::app {
@@ -39,6 +40,14 @@ public:
     [[nodiscard]] SiganStatus siganStatus() const override { return sigan_; }
 
     // ── 브리지 밖의 편의 ─────────────────────────────────────────────────
+    /// 🔴 기록 공장을 꽂는다(docs/06 결정 ③·⑤). 소유하지 않는다. nullptr 이면 기록하지 않는다.
+    ///    · **주입은 위에서 한다.** app 은 sigan 을 모르고, agent 도 sigan 을 모른다 —
+    ///      `SiganPublisher` 를 아는 곳은 record/ 의 구현체 하나뿐이다.
+    ///    · 문서가 생길 때(`createDocument`/`open`)마다 구간 하나가 열린다.
+    ///      세션이 열리고 닫히는 것은 구간 경계가 **아니다**(docs/06 결정 ⑤).
+    void setRecorderFactory(agent::IRecorderFactory* f) noexcept { recorders_ = f; }
+    [[nodiscard]] agent::IRecorderFactory* recorderFactory() const noexcept { return recorders_; }
+
     /// 🔴 상태를 **받아 적는다.** 토글이 아니다(docs/03 5.1).
     ///    발행기(`sigan::SiganPublisher`)를 소유한 쪽이 주기적으로 밀어 넣는다.
     void setSiganStatus(const SiganStatus& s) noexcept { sigan_ = s; }
@@ -49,7 +58,12 @@ public:
     [[nodiscard]] bool quitRequested() const noexcept { return quitRequested_; }
 
 private:
+    /// 열린 문서에 기록 구간을 붙인다. 실패하면 문서를 열지 않는다(docs/06 결정 ④) —
+    /// 기록 없이 그리는 모드를 만들면 그게 뒷문이다.
+    [[nodiscard]] Result<void> attachRecorderTo(Document& doc, std::string_view hint);
+
     std::vector<std::unique_ptr<Document>> docs_;
+    agent::IRecorderFactory* recorders_ = nullptr;
     EventHub events_;
     SiganStatus sigan_{};
     usize active_ = 0;

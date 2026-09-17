@@ -57,9 +57,13 @@ struct PublisherStats {
     u64 resent = 0;      ///< 재연결 후 밀어넣은 프레임 수
     u64 reconnects = 0;  ///< 재핸드셰이크 횟수. **새 Segment 가 아니다**
     u64 idTruncations = 0; ///< u64 식별자를 u32 와이어로 좁히며 잘린 횟수(정직하게 센다)
-    /// 출처별 **획**(Down 프레임) 수. docs/05 3.2 의 비율 표시용 원자료다.
+    /// 출처별 **붓질**(Synthetic 아닌 Down 프레임) 수. docs/06 결정 ② 축 A 다.
     /// 🔴 숫자만 싣는다. 등급 판정은 Sigan 의 몫이다(docs/03 2절).
     StrokeOriginStats origins{};
+    /// 출처별 **영역 연산**(Synthetic Down 프레임) 수. docs/06 결정 ② 축 B 다.
+    /// 🔴 origins 와 **같은 칸에 세지 않는다.** fill 한 번을 붓질 한 번으로 세면
+    ///    그 순간 단위가 거짓이 된다(docs/06 6절 H3).
+    StrokeOriginStats regionOps{};
 };
 
 /// 스트로크 프레임 발행기.

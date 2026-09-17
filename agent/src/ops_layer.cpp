@@ -337,7 +337,131 @@ Result<Json> layerSetProps(AgentSession& s, const Json& req) {
     return Ok(std::move(out));
 }
 
-// ── 선택 ─────────────────────────────────────────────────────────────────
+// ── 선택 (docs/05 8.3 이 적어 둔 한계를 여기서 메운다) ───────────────────
+//
+// 🔴 선택 정본은 **마스크**다(core/selection.hpp). 사각형은 그 경계 상자일 뿐이고,
+//    `select` 응답은 언제나 마스크의 실제 상태(kind·tiles·pixels)를 같이 적는다 —
+//    사각형만 돌려주면 "사각형이 아닌 선택을 사각형으로 아는" AI 가 생긴다.
+
+namespace {
+
+/// 선택 상태를 응답 본문으로. **경계 상자만 주지 않는다.**
+Json selectionToJson(const app::Document& doc) {
+    const SelectionMask& m = doc.selectionMask();
+    Json out = Json::object();
+    // 사각형 칸은 예전 그대로 — 전체 선택(= 제한 없음)은 빈 Rect 다.
+    out.set("selection", jsonRect(doc.selection()));
+    out.set("bounds", jsonRect(m.bounds()));
+    out.set("kind", Json::string(m.isAll() ? "all" : (m.isEmpty() ? "empty" : "mask")));
+    // 🔴 메모리를 숨기지 않는다. 전체 선택·빈 선택은 타일 0개여야 한다.
+    out.set("tiles", Json::integer(static_cast<i64>(m.tileCount())));
+    out.set("selectedPixels", Json::integer(static_cast<i64>(m.selectedPixels())));
+    const i64 area = static_cast<i64>(doc.canvasSize().width) * doc.canvasSize().height;
+    out.set("coverage", Json::number(area > 0 ? static_cast<f64>(m.selectedPixels()) /
+                                                    static_cast<f64>(area)
+                                              : 0.0));
+    return out;
+}
+
+/// 선택을 뽑아 올 원본 레이어의 타일맵.
+Result<const TileMap*> sourceTiles(AgentSession& s, const Json& req, app::Document& doc) {
+    const Result<LayerId> id = resolveLayer(doc.layers(), s.roles(), req["layer"]);
+    if (!id.ok()) {
+        return id.error();
+    }
+    const LayerPtr l = doc.layers().find(id.value());
+    if (!l || l->tiles() == nullptr) {
+        return Err("그룹 레이어에서는 선택을 뽑을 수 없다", ErrorCode::InvalidArgument);
+    }
+    return Ok(static_cast<const TileMap*>(l->tiles()));
+}
+
+/// `points` 를 올가미 폴리곤으로 읽는다. `[[x,y],...]` 와 `[{x,y},...]` 둘 다 받는다.
+Result<std::vector<PointF>> lassoPoints(const Json& v) {
+    if (!v.isArray() || v.size() < 3) {
+        return Err("올가미는 points 에 점이 3개 이상 있어야 한다", ErrorCode::InvalidArgument);
+    }
+    std::vector<PointF> out;
+    out.reserve(v.size());
+    for (usize i = 0; i < v.size(); ++i) {
+        const Json& p = v.at(i);
+        if (p.isArray() && p.size() >= 2) {
+            out.push_back(PointF{static_cast<f32>(p.at(0).asNumber()),
+                                 static_cast<f32>(p.at(1).asNumber())});
+        } else if (p.isObject() && p["x"].isNumber() && p["y"].isNumber()) {
+            out.push_back(
+                PointF{static_cast<f32>(p["x"].asNumber()), static_cast<f32>(p["y"].asNumber())});
+        } else {
+            return Err("points[" + std::to_string(i) + "] 는 [x,y] 또는 {x,y} 다",
+                       ErrorCode::InvalidArgument);
+        }
+    }
+    return Ok(std::move(out));
+}
+
+/// 요청이 말하는 **새 마스크 한 장**을 만든다. 결합·페더는 부르는 쪽이 한다.
+Result<SelectionMask> buildMask(AgentSession& s, const Json& req, app::Document& doc) {
+    const Size sz = doc.canvasSize();
+    const Rect canvas{0, 0, sz.width, sz.height};
+    const std::string mode = req.has("mode") ? req["mode"].asString() : std::string("rect");
+    const bool aa = req["antialias"].asBool(true);
+
+    if (mode == "rect" || mode == "ellipse") {
+        Result<Rect> r = resolveRegion(doc.layers(), s.roles(), req["region"],
+                                       doc.selection(), canvas);
+        if (!r.ok()) {
+            return r.error();
+        }
+        return mode == "rect" ? SelectionMask::fromRect(sz, r.value())
+                              : SelectionMask::fromEllipse(sz, r.value(), aa);
+    }
+    if (mode == "lasso") {
+        Result<std::vector<PointF>> pts = lassoPoints(req["points"]);
+        if (!pts.ok()) {
+            return pts.error();
+        }
+        return SelectionMask::fromPolygon(sz, pts.value(), aa);
+    }
+    if (mode == "color") {
+        const Result<const TileMap*> src = sourceTiles(s, req, doc);
+        if (!src.ok()) {
+            return src.error();
+        }
+        const Result<Color8> ref = colorFromJson(req["color"], Color8::rgba(0, 0, 0, 255));
+        if (!ref.ok()) {
+            return ref.error();
+        }
+        const i64 tol = req["tolerance"].asInt(0);
+        if (tol < 0 || tol > 255) {
+            return Err("tolerance 는 0..255 다", ErrorCode::InvalidArgument);
+        }
+        return SelectionMask::fromColorRange(sz, *src.value(), ref.value(),
+                                             static_cast<i32>(tol));
+    }
+    if (mode == "content") {
+        const Result<const TileMap*> src = sourceTiles(s, req, doc);
+        if (!src.ok()) {
+            return src.error();
+        }
+        const i64 th = req["threshold"].asInt(1);
+        if (th < 0 || th > 255) {
+            return Err("threshold 는 0..255 다", ErrorCode::InvalidArgument);
+        }
+        return SelectionMask::fromContent(sz, *src.value(), static_cast<u8>(th));
+    }
+    if (mode == "alpha") {
+        const Result<const TileMap*> src = sourceTiles(s, req, doc);
+        if (!src.ok()) {
+            return src.error();
+        }
+        return SelectionMask::fromLayerAlpha(sz, *src.value());
+    }
+    return Err("모르는 선택 방식이다: \"" + mode +
+                   "\" (rect|ellipse|lasso|color|content|alpha)",
+               ErrorCode::InvalidArgument);
+}
+
+} // namespace
 
 Result<Json> select(AgentSession& s, const Json& req) {
     const Result<app::Document*> d = s.requireDocument();
@@ -345,36 +469,67 @@ Result<Json> select(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
-    if (req.has("mode") && req["mode"].asString() != "rect") {
-        // 🔴 올가미·색상 선택은 선택 마스크 저장소가 있어야 한다. 없는 걸 있는 척하지 않는다.
-        return Err("지금은 rect 선택만 된다(요청: \"" + req["mode"].asString() +
-                       "\"). 선택 마스크 저장소가 들어오면 그때 연다",
-                   ErrorCode::Unsupported);
+
+    // region 도 mode 도 없으면 선택 해제 = **제한 없음**(전체 선택). 타일 0개로 돌아간다.
+    if (!req.has("region") && !req.has("mode") && !req.has("points")) {
+        doc->setSelectionMask(SelectionMask::all(doc->canvasSize()));
+        return Ok(selectionToJson(*doc));
     }
-    if (!req.has("region")) {
-        doc->setSelection(Rect{});
-        Json out = Json::object();
-        out.set("selection", jsonRect(Rect{}));
-        return Ok(std::move(out));
+
+    Result<SelectionMask> made = buildMask(s, req, *doc);
+    if (!made.ok()) {
+        return made.error();
     }
-    const Size sz = doc->canvasSize();
-    const Result<Rect> r = resolveRegion(doc->layers(), s.roles(), req["region"], doc->selection(),
-                                         Rect{0, 0, sz.width, sz.height});
-    if (!r.ok()) {
-        return r.error();
+    SelectionMask mask = std::move(made).value();
+
+    // 만든 직후에 페더를 먹인다 — 결합하기 전이라야 각 조각의 경계가 부드러워진다.
+    if (req.has("feather")) {
+        const f64 rad = req["feather"].asNumber(0.0);
+        if (rad < 0.0 || rad > 1024.0) {
+            return Err("feather 는 0..1024 다", ErrorCode::InvalidArgument);
+        }
+        const Result<void> f = mask.feather(static_cast<f32>(rad));
+        if (!f.ok()) {
+            return f.error();
+        }
     }
-    const Rect clipped = r.value().intersected(Rect{0, 0, sz.width, sz.height});
-    doc->setSelection(clipped);
-    Json out = Json::object();
-    out.set("selection", jsonRect(clipped));
-    out.set("requested", jsonRect(r.value()));
+
+    // 🔴 파라미터 이름이 `op` 가 아니라 `combine` 인 이유: 요청 객체의 `op` 는 **연산 이름**
+    //    자리다(capabilities.hpp kOpKey). 겹치면 결합 방식이 연산 이름을 먹는다.
+    SelectionOp op = SelectionOp::Replace;
+    if (req.has("combine")) {
+        const Result<SelectionOp> parsed = selectionOpFromName(req["combine"].asString());
+        if (!parsed.ok()) {
+            return parsed.error();
+        }
+        op = parsed.value();
+    }
+    if (op == SelectionOp::Replace) {
+        doc->setSelectionMask(std::move(mask));
+    } else {
+        SelectionMask cur = doc->selectionMask();
+        const Result<void> c = cur.combine(mask, op);
+        if (!c.ok()) {
+            return c.error();
+        }
+        doc->setSelectionMask(std::move(cur));
+    }
+    Json out = selectionToJson(*doc);
+    out.set("mode", Json::string(req.has("mode") ? req["mode"].asString() : std::string("rect")));
+    out.set("combine", Json::string(selectionOpName(op)));
     return Ok(std::move(out));
 }
 
-Result<Json> selectInvert(AgentSession&, const Json&) {
-    // 표에서 supported=false 라 여기까지 오지 않는다. 그래도 정직하게 답한다.
-    return Err("선택 반전은 사각형 하나짜리 선택 모델로는 표현할 수 없다",
-               ErrorCode::Unsupported);
+Result<Json> selectInvert(AgentSession& s, const Json&) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    SelectionMask m = doc->selectionMask();
+    m.invert(); // O(타일 수). 캔버스를 할당하지 않는다.
+    doc->setSelectionMask(std::move(m));
+    return Ok(selectionToJson(*doc));
 }
 
 Result<Json> selectExpand(AgentSession& s, const Json& req) {
@@ -383,29 +538,40 @@ Result<Json> selectExpand(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
-    const Rect cur = doc->selection();
-    if (cur.isEmpty()) {
-        return Err("선택 영역이 비어 있다", ErrorCode::NotFound);
-    }
     const i64 by = req["by"].asInt(0);
-    if (by < -100000 || by > 100000) {
-        return Err("by 가 너무 크다", ErrorCode::InvalidArgument);
+    if (by < -16384 || by > 16384) {
+        return Err("by 가 너무 크다(±16384)", ErrorCode::InvalidArgument);
     }
-    const auto n = static_cast<i32>(by);
-    Rect grown{cur.x - n, cur.y - n, cur.width + 2 * n, cur.height + 2 * n};
-    if (grown.width <= 0 || grown.height <= 0) {
-        grown = Rect{};
+    SelectionMask m = doc->selectionMask();
+    const Result<void> e = m.expand(static_cast<i32>(by));
+    if (!e.ok()) {
+        return e.error();
     }
-    const Size sz = doc->canvasSize();
-    grown = grown.intersected(Rect{0, 0, sz.width, sz.height});
-    doc->setSelection(grown);
-    Json out = Json::object();
-    out.set("selection", jsonRect(grown));
+    doc->setSelectionMask(std::move(m));
+    Json out = selectionToJson(*doc);
+    out.set("by", Json::integer(by));
     return Ok(std::move(out));
 }
 
-Result<Json> selectFeather(AgentSession&, const Json&) {
-    return Err("부드러운 선택을 담을 마스크 저장소가 아직 없다", ErrorCode::Unsupported);
+Result<Json> selectFeather(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const f64 rad = req["radius"].asNumber(0.0);
+    if (rad < 0.0 || rad > 1024.0) {
+        return Err("radius 는 0..1024 다", ErrorCode::InvalidArgument);
+    }
+    SelectionMask m = doc->selectionMask();
+    const Result<void> f = m.feather(static_cast<f32>(rad));
+    if (!f.ok()) {
+        return f.error();
+    }
+    doc->setSelectionMask(std::move(m));
+    Json out = selectionToJson(*doc);
+    out.set("radius", Json::number(rad));
+    return Ok(std::move(out));
 }
 
 // ── 브러시 ───────────────────────────────────────────────────────────────

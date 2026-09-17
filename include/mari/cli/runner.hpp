@@ -26,6 +26,12 @@
 #include <string>
 #include <vector>
 
+namespace mari::record {
+/// 기록 배선의 공장. 정의는 include/mari/record/sigan_recorder.hpp.
+/// 🔴 CLI 는 이걸 **꽂기만** 한다. publish() 를 부르지 않는다(docs/06 결정 ③).
+class SiganRecorderFactory;
+} // namespace mari::record
+
 namespace mari::cli {
 
 using agent::Json;
@@ -47,6 +53,11 @@ struct CliOptions {
     bool mcp = false;              ///< `--mcp` — MCP 서버로 기동(docs/05 2.8 · 4절)
     bool stdio = false;            ///< `--stdio` — MCP 전송을 표준입출력으로
     std::string outDir;            ///< `--out-dir <dir>`
+    /// `--proof-out <path>` — 이 세션의 기록을 무서명 과정 로그(JSON)로 떨군다(docs/03 6절).
+    /// 🔴 인증서가 아니다. 서명도 해시체인도 없다 — 등급은 "unsigned" 하나뿐이다.
+    std::string proofOut;
+    /// `--journal-dir <dir>` — 저널을 놓을 디렉터리. 주면 기록이 켜진다(docs/06).
+    std::string journalDir;
     std::string agentId = "mari-cli"; ///< `--agent-id <id>`
     std::string view;              ///< `--view none|dirty|full|...` (연산이 직접 정하면 그쪽이 이긴다)
     bool continueOnError = false;  ///< `--continue-on-error`
@@ -79,8 +90,10 @@ struct Script {
                                       bool keepBase64);
 
 /// 연산 목록을 실행한다. 진행 상황은 err 로, 결과 JSON 을 돌려준다.
+/// `recorders` 를 주면 리포트에 문서 구간 집계가 함께 실린다(기록이 켜져 있을 때).
 [[nodiscard]] Json runOps(agent::AgentSession& session, const std::vector<Json>& ops,
-                          const CliOptions& opt, std::ostream& err, usize& failed);
+                          const CliOptions& opt, std::ostream& err, usize& failed,
+                          const record::SiganRecorderFactory* recorders = nullptr);
 
 /// CLI 본체. main() 은 이걸 부르기만 한다(테스트가 스트림을 갈아끼울 수 있게).
 /// 표준입력은 `--mcp --stdio` 일 때만 읽는다.

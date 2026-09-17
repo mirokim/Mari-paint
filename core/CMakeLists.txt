@@ -8,6 +8,7 @@ set(MARI_CORE_SOURCES
     src/blend.cpp
     src/compositor.cpp
     src/undo.cpp
+    src/selection.cpp
 )
 
 if(MARI_CORE_SOURCES)

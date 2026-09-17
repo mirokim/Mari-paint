@@ -50,10 +50,16 @@ std::vector<ProofStrokeSummary> summarizeStrokes(const JournalScan& scan) {
             // 출처는 획 시작 프레임의 것을 쓴다. 한 획 안에서 바뀔 수 있는 값이 아니다.
             cur.origin = f.origin;
             cur.agentId = f.agentId;
+            // 🔴 붓질인가 영역 연산인가도 프레임에서 읽는다(docs/06 결정 ①).
+            cur.synthetic = hasFlag(f.flags, FrameFlag::Synthetic);
+            cur.x0 = f.cx;
+            cur.y0 = f.cy;
             open = true;
         }
         cur.seqLast = f.seq;
         cur.tEndMs = f.tMs;
+        cur.x1 = f.cx;
+        cur.y1 = f.cy;
         ++cur.pointCount;
         if (hasFlag(f.flags, FrameFlag::Up)) {
             out.push_back(cur);
@@ -70,6 +76,26 @@ StrokeOriginStats originStats(const std::vector<ProofStrokeSummary>& strokes) {
     StrokeOriginStats st;
     for (const auto& s : strokes) {
         st.add(s.origin); // 모르는 값도 버리지 않는다 — "미지정" 칸으로 간다
+    }
+    return st;
+}
+
+StrokeOriginStats brushStrokeStats(const std::vector<ProofStrokeSummary>& strokes) {
+    StrokeOriginStats st;
+    for (const auto& s : strokes) {
+        if (!s.synthetic) {
+            st.add(s.origin);
+        }
+    }
+    return st;
+}
+
+StrokeOriginStats regionOpStats(const std::vector<ProofStrokeSummary>& strokes) {
+    StrokeOriginStats st;
+    for (const auto& s : strokes) {
+        if (s.synthetic) {
+            st.add(s.origin);
+        }
     }
     return st;
 }
@@ -110,22 +136,52 @@ Result<std::string> buildProofLog(const ProofLogInput& in) {
     // ── 출처별 집계 (docs/05 3.2) ──────────────────────────────────────
     // 🔴 숫자만 싣는다. "human-only" · "ai-assisted" 같은 판정 문자열은 없다.
     //    의뢰인이 원하는 건 "AI 안 씀"이 아니라 "거짓말 안 함"이다. 사실만 적는다.
-    const StrokeOriginStats origins = originStats(strokes);
-    out += ",\n  \"originCounts\": {";
+    // 🔴 세 축을 **따로** 싣는다(docs/06 결정 ② · 6절 H3).
+    //    획 수만 실으면 캔버스 전체를 칠한 fill 이 "AI 0.05%" 가 되고,
+    //    면적만 실으면 배경 그라데이션 하나가 사람의 선화 1,847획을 지운다.
+    //    둘 다 참이고 둘 다 불완전하므로 둘 다 싣고, **하나로 합치지 않는다** —
+    //    가중치를 고르는 순간 그건 판정이고, 판정은 Sigan 의 몫이다(docs/03 2절).
+    const StrokeOriginStats origins = brushStrokeStats(strokes); // 축 A
+    const StrokeOriginStats regions = regionOpStats(strokes);    // 축 B
     const StrokeOrigin kAll[] = {StrokeOrigin::HumanPen, StrokeOrigin::HumanMouse,
                                  StrokeOrigin::Agent, StrokeOrigin::Imported,
                                  StrokeOrigin::Filter};
-    for (usize i = 0; i < sizeof(kAll) / sizeof(kAll[0]); ++i) {
-        out += i == 0 ? "\"" : ", \"";
-        out += strokeOriginName(kAll[i]);
-        out += "\": " + std::to_string(origins.count(kAll[i]));
-    }
-    // 출처가 기록되지 않은 획. **0 이어야 정상이다.** 0 이 아니면 숨기지 않고 드러낸다.
-    out += ", \"unspecified\": " + std::to_string(origins.unspecified());
-    out += "}";
+    const auto countBlock = [&](const StrokeOriginStats& st) {
+        std::string b = "{";
+        for (usize i = 0; i < sizeof(kAll) / sizeof(kAll[0]); ++i) {
+            b += i == 0 ? "\"" : ", \"";
+            b += strokeOriginName(kAll[i]);
+            b += "\": " + std::to_string(st.count(kAll[i]));
+        }
+        // 출처가 기록되지 않은 획. **0 이어야 정상이다.** 0 이 아니면 숨기지 않고 드러낸다.
+        b += ", \"unspecified\": " + std::to_string(st.unspecified());
+        b += "}";
+        return b;
+    };
+    // 축 A — 붓질. 키 이름은 그대로 두되 뜻이 좁아졌다: **Synthetic 이 아닌 획만** 센다.
+    out += ",\n  \"originCounts\": " + countBlock(origins);
     out += ",\n  \"humanStrokes\": " + std::to_string(origins.human());
     out += ",\n  \"agentStrokes\": " + std::to_string(origins.agent());
     out += ",\n  \"agentStrokeRatio\": " + num3(origins.agentRatio());
+    // 축 B — 영역 연산(fill·erase·gradient 따위). 붓질과 **같은 칸에 세지 않는다.**
+    out += ",\n  \"regionOpCounts\": " + countBlock(regions);
+    out += ",\n  \"humanRegionOps\": " + std::to_string(regions.human());
+    out += ",\n  \"agentRegionOps\": " + std::to_string(regions.agent());
+    // 축 C — 변경된 타일 수. 픽셀이 아니라 타일이다(정수라 가장자리로 부풀릴 수 없다).
+    out += ",\n  \"changedTiles\": {";
+    for (usize i = 0; i < sizeof(kAll) / sizeof(kAll[0]); ++i) {
+        const usize slot = static_cast<usize>(static_cast<u8>(kAll[i]));
+        const u64 v = in.changedTilesByOrigin == nullptr ? 0ull : in.changedTilesByOrigin[slot];
+        out += i == 0 ? "\"" : ", \"";
+        out += strokeOriginName(kAll[i]);
+        out += "\": " + std::to_string(v);
+    }
+    out += ", \"unspecified\": ";
+    out += std::to_string(in.changedTilesByOrigin == nullptr ? 0ull : in.changedTilesByOrigin[0]);
+    out += ", \"measured\": ";
+    // 🔴 안 잰 것을 0 으로 적어 놓고 잰 척하지 않는다.
+    out += in.changedTilesByOrigin != nullptr ? "true" : "false";
+    out += "}";
     // 붓을 쥔 에이전트 목록. 와이어에는 다이제스트만 실리므로 이름을 여기서 붙여 준다.
     out += ",\n  \"agents\": [";
     for (usize i = 0; i < in.agents.size(); ++i) {
@@ -149,6 +205,18 @@ Result<std::string> buildProofLog(const ProofLogInput& in) {
         out += ", \"points\": " + std::to_string(s.pointCount);
         out += ", \"eraser\": ";
         out += s.eraser ? "true" : "false";
+        // 🔴 붓질이 아니었다면 그렇게 적는다. 이 값은 프레임 플래그에서 왔다.
+        out += ", \"synthetic\": ";
+        out += s.synthetic ? "true" : "false";
+        if (s.synthetic) {
+            // 합성 프레임 쌍의 두 점이 정한 영향 영역. **프레임 바이트 안**에서 나온 사실이다.
+            const f64 lx = s.x0 < s.x1 ? s.x0 : s.x1;
+            const f64 ly = s.y0 < s.y1 ? s.y0 : s.y1;
+            const f64 hx = s.x0 < s.x1 ? s.x1 : s.x0;
+            const f64 hy = s.y0 < s.y1 ? s.y1 : s.y0;
+            out += ", \"area\": {\"x\": " + num3(lx) + ", \"y\": " + num3(ly) +
+                   ", \"w\": " + num3(hx - lx + 1.0) + ", \"h\": " + num3(hy - ly + 1.0) + "}";
+        }
         // 🔴 획마다 출처가 붙는다. 이 값은 저널(=서명 정본이 될 프레임)에서 왔다.
         out += ", \"origin\": \"";
         out += strokeOriginName(s.origin);

@@ -91,7 +91,8 @@ usize DocSnapshot::approxOverheadBytes() const {
     return n;
 }
 
-Result<DocSnapshot> takeSnapshot(const LayerTree& tree, std::string label, const Rect& selection) {
+Result<DocSnapshot> takeSnapshot(const LayerTree& tree, std::string label,
+                                 const SelectionMask& selection) {
     DocSnapshot snap;
     snap.label = std::move(label);
     snap.canvasSize = tree.canvasSize();
@@ -102,7 +103,8 @@ Result<DocSnapshot> takeSnapshot(const LayerTree& tree, std::string label, const
     return Ok(std::move(snap));
 }
 
-Result<void> restoreSnapshot(LayerTree& tree, const DocSnapshot& snap, Rect* outSelection) {
+Result<void> restoreSnapshot(LayerTree& tree, const DocSnapshot& snap,
+                             SelectionMask* outSelection) {
     std::unordered_set<LayerId> wanted;
     wanted.reserve(snap.nodes.size() * 2);
     for (const auto& n : snap.nodes) {

@@ -3,6 +3,13 @@
 // 프레이밍은 **한 줄 = 요청 하나, 한 줄 = 응답 하나**다. 길이 헤더를 쓰지 않는다 —
 // `nc`/`socat`/파이썬 한 줄로 두드려 볼 수 있는 게 에이전트 입장에서 훨씬 낫다.
 //
+// 🔴 한 연결에는 **두 종류의 줄**이 흐른다(docs/07 3절).
+//    · 응답  : 요청 한 줄에 대한 답 한 줄. 요청 순서대로 나간다.
+//    · 푸시  : `{"push":true,"event":{"kind":...,"data":{...}}}` — **요청 없이** 나간다.
+//    클라이언트는 `push` 키 하나로 둘을 가른다. 응답에는 `push` 가 절대 붙지 않는다.
+//    푸시는 `events.subscribe` 이후에만 나가고 `events.unsubscribe` 로 멈춘다.
+//    (`events.poll` 은 그대로 남는다 — 푸시를 안 읽는 단순 클라이언트가 여전히 있다.)
+//
 // 두 가지 요청 형태를 다 받는다:
 //   · `{"op":"doc.describe"}`  → agent-api 의 응답 봉투 그대로
 //   · `{"jsonrpc":"2.0","method":"doc.describe","params":{...},"id":1}` → JSON-RPC 2.0 응답
@@ -15,6 +22,7 @@
 #ifndef MARI_CLI_SERVER_HPP
 #define MARI_CLI_SERVER_HPP
 
+#include <mari/agent/json.hpp>
 #include <mari/agent/session.hpp>
 
 #include <functional>
@@ -23,6 +31,8 @@
 #include <string_view>
 
 namespace mari::cli {
+
+using agent::Json;
 
 /// 바인딩 주소.
 struct ServeAddress {
@@ -39,6 +49,10 @@ struct ServeAddress {
 /// 깨진 JSON 도 오류 응답 한 줄로 돌아온다.
 [[nodiscard]] std::string handleRpcLine(agent::AgentSession& session, std::string_view line,
                                         bool* quit = nullptr);
+
+/// 푸시 한 줄을 만든다(개행 없음). 응답과 구분되게 `"push":true` 를 단다.
+/// `dropped` 가 0 이 아니면 **이 연결이 놓친 건수**를 같이 싣는다 — 조용히 넘어가지 않는다.
+[[nodiscard]] std::string pushLine(const std::string& kind, const Json& data, u64 dropped = 0);
 
 /// TCP 로 받는다. 한 번에 한 연결을 처리한다(세션이 스레드 하나 규약이라 그게 맞다).
 /// `onReady` 는 실제로 바인딩된 포트를 알려준다(port 0 일 때 필요하다).

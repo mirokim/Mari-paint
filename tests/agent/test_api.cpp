@@ -93,7 +93,13 @@ MARI_TEST(agent_origin_forced) {
     const Json f = s->execute(fill);
     CHECK(f["ok"].asBool());
     CHECK_EQ(f["result"]["origin"].asString(), std::string("agent"));
-    CHECK_EQ(s->originStats().agent(), static_cast<u64>(2));
+    // 🔴 그러나 **붓질로 세지는 않는다**(docs/06 결정 ② · 6절 H3).
+    //    캔버스 전체를 칠한 fill 을 붓질 한 번과 같은 칸에 세면 그 순간 단위가 거짓이 된다.
+    //    출처는 그대로 Agent 고, 칸만 다르다.
+    CHECK_EQ(s->originStats().agent(), static_cast<u64>(1));   // 축 A — 붓질은 그대로 1
+    CHECK_EQ(s->regionOpStats().agent(), static_cast<u64>(1)); // 축 B — 영역 연산 1
+    CHECK_EQ(s->regionOpStats().human(), static_cast<u64>(0));
+    CHECK(s->changedTiles() > 0);                              // 축 C — 실제로 칠해졌다
 }
 
 MARI_TEST(anonymous_agent_gets_no_session) {
@@ -245,9 +251,27 @@ MARI_TEST(unknown_op_and_unknown_param_are_refused) {
     CHECK(contains(m["error"]["message"].asString(), "height"));
 
     // 지원하지 않는 연산은 **이유와 함께** 거절한다.
-    const Json unsup = s->execute(req("select.invert"));
-    CHECK(!unsup["ok"].asBool());
-    CHECK_EQ(unsup["error"]["code"].asString(), std::string("Unsupported"));
+    //
+    // 🔴 이 검사는 표를 훑는다. 예전에는 `select.invert` 를 이름으로 박아 뒀지만,
+    //    선택 마스크가 들어오면서 그 연산이 **실제로 지원된다.** 이름을 그대로 두면
+    //    "미지원을 거절한다"가 아니라 "select.invert 는 미지원이다"를 검사하게 된다 —
+    //    사실이 아닌 것을 테스트가 붙잡고 있는 꼴이다.
+    //    지금 이 빌드에는 미지원 연산이 **하나도 없다**(그래서 이 루프는 0바퀴 돈다).
+    //    그 사실 자체는 아래 `unsupportedOps` 수로 드러내고 숨기지 않는다.
+    usize unsupportedOps = 0;
+    for (const agent::OpSpec& op : agent::opTable()) {
+        if (op.supported) {
+            continue;
+        }
+        ++unsupportedOps;
+        const Json unsup = s->execute(req(op.name));
+        CHECK(!unsup["ok"].asBool());
+        CHECK_EQ(unsup["error"]["code"].asString(), std::string("Unsupported"));
+        // 이유가 비어 있으면 "안 된다"만 말하고 왜인지는 안 말하는 것이다.
+        CHECK(std::string(op.unsupportedReason).size() > 0);
+    }
+    std::printf("  [표] 미지원 연산 %zu개 / 전체 %zu개\n", unsupportedOps,
+                agent::opTable().size());
 
     // 문자열 입구도 같은 규약을 지킨다. 깨진 JSON 도 **응답**이지 예외가 아니다.
     const std::string text = s->executeText("{ not json");
@@ -433,7 +457,12 @@ MARI_TEST(describe_reads_like_a_sentence) {
     // JSON 쪽도 같은 사실을 말한다.
     CHECK_EQ(d["result"]["layerCount"].asInt(), 4);
     CHECK_EQ(d["result"]["layers"].size(), static_cast<usize>(4));
-    CHECK(d["result"]["origins"]["agentRatio"].asNumber() > 0.99);
+    // 이 문서는 fill 두 번으로 만들어졌다 — **붓질은 0이다.**
+    // 그래서 붓질 비율은 0 이고, 영역 연산 칸에 2 가 있다. 둘 다 참이고 둘 다 필요하다.
+    CHECK_EQ(d["result"]["origins"]["total"].asInt(), 0);
+    CHECK_EQ(d["result"]["origins"]["regionOps"]["agent"].asInt(), 2);
+    CHECK_EQ(d["result"]["origins"]["regionOps"]["human"].asInt(), 0);
+    CHECK(d["result"]["origins"]["changedTiles"].asInt() > 0);
     CHECK_EQ(d["result"]["origins"]["human"].asInt(), 0);
     const Json& bg = d["result"]["layers"].at(0);
     CHECK_EQ(bg["name"].asString(), std::string("배경"));

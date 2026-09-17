@@ -82,7 +82,13 @@ u64 SiganPublisher::publish(const StrokeSample& s) noexcept {
     f.origin = s.source.origin();
     f.agentId = s.source.agentDigest();
     if (hasFlag(f.flags, FrameFlag::Down)) {
-        stats_.origins.add(f.origin); // 획 단위 집계. 판정은 하지 않는다
+        // 🔴 붓질과 영역 연산을 **다른 칸**에 센다(docs/06 결정 ② · 6절 H3).
+        //    합치면 캔버스 전체를 칠한 fill 이 붓질 한 번으로 보인다.
+        if (hasFlag(f.flags, FrameFlag::Synthetic)) {
+            stats_.regionOps.add(f.origin);
+        } else {
+            stats_.origins.add(f.origin);
+        }
     }
 
     // 🔴 저널이 먼저다. 파이프가 어떤 상태든 정본은 남는다. 드롭은 없다(docs/03 4.2).

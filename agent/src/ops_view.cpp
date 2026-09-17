@@ -68,7 +68,7 @@ Result<Json> compare(AgentSession& s, const Json& req) {
         return Err("그런 스냅샷이 없다", ErrorCode::NotFound);
     }
 
-    Result<DocSnapshot> now = takeSnapshot(doc->layers(), std::string{}, doc->selection());
+    Result<DocSnapshot> now = takeSnapshot(doc->layers(), std::string{}, doc->selectionMask());
     if (!now.ok()) {
         return now.error();
     }

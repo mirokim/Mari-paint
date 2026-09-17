@@ -10,6 +10,7 @@
 set(MARI_APP_SOURCES
     src/events.cpp
     src/document.cpp
+    src/stroke_entry.cpp
     src/application.cpp
 )
 

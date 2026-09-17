@@ -134,7 +134,10 @@ Json McpServer::initialize(const Json& params) {
                 "· 실험하기 전에 snapshot 을 찍어라. O(1) 이라 공짜다. restore 로 되돌린다.\n"
                 "· 획이 많으면 batch 로 묶어라. 왕복이 줄고 atomic 이면 롤백된다.\n"
                 "· 어떤 붓·블렌드 모드가 있는지는 capabilities 가 런타임에 알려준다.\n"
-                "· 🔴 이 서버로 들어온 획은 전부 origin=agent 로 기록된다. 고를 수 없다."));
+                "· 🔴 이 서버로 들어온 획은 전부 origin=agent 로 기록된다. 고를 수 없다.\n"
+                // 🔴 여기서 "밀어 준다"고 쓰면 거짓말이다. MCP 규약에는 응용 이벤트를
+                //    모델에게 밀어 넣는 채널이 없다(docs/07 5절). 당겨 가라고 말한다.
+                "· 이벤트는 밀어 주지 못한다(MCP 규약의 한계다). events_poll 로 당겨 가라."));
     return out;
 }
 

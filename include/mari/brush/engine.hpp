@@ -14,6 +14,7 @@
 #include <mari/brush/preset.hpp>
 #include <mari/core/origin.hpp>
 #include <mari/core/result.hpp>
+#include <mari/core/selection.hpp>
 #include <mari/core/tile.hpp>
 #include <mari/core/types.hpp>
 
@@ -69,6 +70,13 @@ struct StrokeContext {
     u64 seed = 0;
     /// 기록용 레이어 id (더티 알림·저널에 붙는다).
     LayerId layerId = kInvalidLayerId;
+    /// 선택 마스크. nullptr 이거나 `isAll()` 이면 제한이 없다.
+    ///
+    /// 🔴 **핫 패스 비용 0 규약**: 엔진은 `beginStroke()` 에서 이 값을 한 번만 보고
+    ///    "제한 없음"이면 포인터를 꺼 둔다. 선택이 없는 그림에서 스탬프 하나당 늘어나는
+    ///    비용은 0 이어야 한다(`tests/stroke/test_bench.cpp` 가 수치를 찍는다).
+    ///    소유하지 않는다 — 스트로크가 끝날 때까지 살아 있어야 한다.
+    const SelectionMask* selection = nullptr;
 };
 
 /// 브러시 엔진. 프리셋 하나를 물고 스탬프를 찍는다.

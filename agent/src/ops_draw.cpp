@@ -10,6 +10,7 @@
 #include <mari/agent/session.hpp>
 
 #include <mari/app/document.hpp>
+#include <mari/app/stroke_entry.hpp>
 #include <mari/core/undo.hpp>
 #include <mari/ora/image.hpp>
 #include <mari/stroke/native_engine.hpp>
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace mari::agent::ops {
 
@@ -185,10 +187,106 @@ Result<std::vector<StrokePoint>> parsePoints(const Json& v) {
     return Ok(std::move(out));
 }
 
+/// 🔴 선택 마스크를 영역 이미지에 먹인다(fill·erase·gradient 가 쓴다).
+///
+/// 광역 연산도 **선택 밖을 건드리지 않는다.** 마스크가 중간값이면 원래 픽셀과 섞는다.
+/// 섞기는 프리멀티플라이 공간에서 한다 — 스트레이트 알파로 채널별 보간하면
+/// 반투명 가장자리가 검게 죽는다.
+/// 전체 선택이면 아무 일도 하지 않는다(읽기조차 하지 않는다).
+Result<void> maskRegionImage(app::Document& doc, const LayerPtr& layer, const Rect& area,
+                             ora::Image8& img, bool eraser) {
+    const SelectionMask& sel = doc.selectionMask();
+    if (sel.isAll()) {
+        return Ok();
+    }
+    Result<ora::Image8> had = ora::readRegion(*layer->tiles(), area);
+    if (!had.ok()) {
+        return had.error();
+    }
+    const ora::Image8& old = had.value();
+    for (i32 y = 0; y < area.height; ++y) {
+        u8* dst = img.pixels.data() + static_cast<usize>(y) * img.stride();
+        const u8* src = old.pixels.data() + static_cast<usize>(y) * old.stride();
+        for (i32 x = 0; x < area.width; ++x, dst += 4, src += 4) {
+            const f32 m = static_cast<f32>(sel.valueAt(area.x + x, area.y + y)) * (1.0f / 255.0f);
+            if (m >= 1.0f) {
+                continue; // 완전히 선택된 자리 — 새 픽셀 그대로
+            }
+            if (m <= 0.0f) {
+                std::copy(src, src + 4, dst); // 선택 밖 — 원래 픽셀을 되돌린다
+                continue;
+            }
+            if (eraser) {
+                // 지우개는 알파만 깎는다. 색을 0 쪽으로 끌면 가장자리가 검어진다.
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = static_cast<u8>(std::lround(static_cast<f32>(src[3]) * (1.0f - m)));
+                continue;
+            }
+            const f32 oa = static_cast<f32>(src[3]) * (1.0f / 255.0f);
+            const f32 na = static_cast<f32>(dst[3]) * (1.0f / 255.0f);
+            const f32 outA = oa + (na - oa) * m;
+            for (int c = 0; c < 3; ++c) {
+                const f32 op = static_cast<f32>(src[c]) * oa;
+                const f32 np = static_cast<f32>(dst[c]) * na;
+                const f32 mixed = op + (np - op) * m;
+                dst[c] = outA > 0.0f
+                             ? static_cast<u8>(std::lround(std::clamp(mixed / outA, 0.0f, 255.0f)))
+                             : src[c];
+            }
+            dst[3] = static_cast<u8>(std::lround(std::clamp(outA * 255.0f, 0.0f, 255.0f)));
+        }
+    }
+    return Ok();
+}
+
 /// 한 영역을 이미지로 덮어쓰고 **실행취소를 남긴다**(Document 의 경로를 그대로 쓴다).
+/// `changedTiles` 에 실제로 바뀐 타일 수가 담긴다(docs/06 결정 ② 축 C).
 Result<void> writeRegionWithUndo(app::Document& doc, LayerId id, const Rect& area,
-                                 const ora::Image8& img, const char* undoText) {
-    return doc.paintPixels(id, area, img.pixels.data(), img.pixels.size(), undoText);
+                                 const ora::Image8& img, const char* undoText,
+                                 u32& changedTiles) {
+    return doc.paintPixels(id, area, img.pixels.data(), img.pixels.size(), undoText,
+                           &changedTiles);
+}
+
+/// 🔴 기록이 고장 났으면 **그리기 전에** 거절한다(docs/06 결정 ④).
+///    기록 없이 바뀐 픽셀이 하나라도 생기면 그 .ora 의 prooflog 는 캔버스를 설명하지
+///    못하고, 설명하지 못하는 인증서는 거짓이다(docs/06 6절 H1).
+///    자동 복구는 하지 않는다 — 조용히 다시 그려지기 시작하면 그 사이가 구멍이 된다.
+Result<void> requireRecording(const app::Document& doc) {
+    if (doc.recordingBroken()) {
+        return Err("기록이 고장 나 더 그릴 수 없다 — 기록 없이 그리는 모드는 없다"
+                   "(docs/06 결정 ④)",
+                   ErrorCode::IoError);
+    }
+    return Ok();
+}
+
+/// 영역 직접쓰기 하나를 **규약대로 마무리한다**(docs/06 결정 ① · ② · ④).
+///
+/// · 합성 프레임 쌍으로 기록하고(붓질 수에 섞이지 않는다)
+/// · 저널이 고장 났으면 방금 쓴 픽셀을 undo 로 **롤백**하고 실패시킨다
+/// · 파이프(싱크) 실패는 실패가 아니다 — 저널에 스풀되고 성공이다(docs/03 5.1 · 5.2)
+Result<void> finishRegionOp(AgentSession& s, app::Document& doc, RegionOpKind kind,
+                            const Rect& area, LayerId layerId, bool eraser, u32 changedTiles) {
+    const Result<void> rec = app::recordRegionOp(doc, s.strokeSource(), kind, area, layerId,
+                                                 eraser, changedTiles);
+    if (!rec.ok()) {
+        const Result<void> rolled = doc.undo();
+        if (!rolled.ok()) {
+            // 롤백까지 실패했다면 그 사실을 삼키지 않는다. 더 나쁜 상태를 숨기지 않는다.
+            return Err(std::string(rec.message()) + " (게다가 롤백도 실패했다: " +
+                           rolled.message() + ")",
+                       ErrorCode::IoError);
+        }
+        return rec;
+    }
+    s.noteDirty(area);
+    // 축 B·C. 붓질 수(축 A)는 **올리지 않는다** — 이건 붓질이 아니다(H3).
+    s.countRegionOp();
+    s.countChangedTiles(changedTiles);
+    return Ok();
 }
 
 } // namespace
@@ -201,6 +299,10 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
+    const Result<void> ok = requireRecording(*doc);
+    if (!ok.ok()) {
+        return ok.error();
+    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
@@ -272,6 +374,9 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
     ctx.alphaLocked = layer.value()->alphaLocked();
     ctx.layerId = layer.value()->id();
     ctx.seed = static_cast<u64>(req["seed"].asInt(0));
+    // 🔴 선택 밖에는 한 픽셀도 찍히지 않는다. 전체 선택이면 엔진이 이 포인터를 꺼 버리므로
+    //    선택을 쓰지 않는 그림에서 늘어나는 비용은 0 이다(brush/engine.hpp 의 규약).
+    ctx.selection = &doc->selectionMask();
 
     pipe_ns::StrokePipeline pipe(engine.value().get());
     pipe_ns::StrokeConfig cfg;
@@ -309,19 +414,41 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
         return e;
     };
 
+    // 🔴 기록 입구. 사람 펜(WM_POINTER)이 붙어도 **같은 클래스**를 쓴다 —
+    //    두 번째 발행 경로를 만들지 않는다(docs/06 결정 ③).
+    //    여기서도 출처를 고르지 않는다: 파이프라인이 들고 있는 것을 그대로 넘긴다.
+    app::StrokeEntry entry(*doc, ctx.source, ctx.layerId,
+                           chosen.value()->id, ctx.eraser);
+    // 프레임에 싣는 점은 **실제로 그린 점**이다. 입력 원본이 아니라 정규화·보정을 지난
+    // 파이프라인의 샘플을 쓴다 — 기록과 픽셀이 어긋나면 그 기록은 캔버스를 설명하지 못한다.
+    const auto sampleNow = [&]() {
+        const pipe_ns::InputSample& in = pipe.lastSample();
+        app::PenSample ps;
+        ps.pos = in.pos;
+        ps.pressure = in.pressure;
+        ps.tiltX = in.tiltX;
+        ps.tiltY = in.tiltY;
+        ps.rotation = in.rotationDeg;
+        ps.velocity = in.velocity;
+        return ps;
+    };
+
     const std::vector<StrokePoint>& pts = points.value();
     const Result<void> begun = pipe.begin(ctx, makeEvent(pts[0], 0));
     if (!begun.ok()) {
         return begun.error();
     }
+    entry.down(sampleNow());
     for (usize i = 1; i + 1 < pts.size(); ++i) {
         pipe.extend(makeEvent(pts[i], i));
+        entry.move(sampleNow());
     }
     if (pts.size() > 1) {
         pipe.end(makeEvent(pts.back(), pts.size() - 1));
     } else {
         pipe.end();
     }
+    entry.up(sampleNow());
 
     const DirtyTiles& dirty = pipe.dirtyTiles();
     const Rect dirtyRect = pipe.dirtyBounds();
@@ -342,10 +469,27 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
         doc->undoStack().push(std::move(cmd));
     }
 
+    // 획이 끝났다. 저널을 flush 하고 축 A·C 를 올린다(docs/06 결정 ②).
+    entry.finish(static_cast<u32>(changed));
+    if (entry.broken()) {
+        // 🔴 픽셀은 바뀌었는데 정본에 흔적이 없다 = 인증서가 거짓이 된다.
+        //    방금 그린 것을 되돌리고 실패시킨다(docs/06 결정 ④ · 6절 H1).
+        const Result<void> rolled = doc->undo();
+        if (!rolled.ok()) {
+            return Err(std::string("저널에 기록하지 못했고 롤백도 실패했다: ") +
+                           rolled.message(),
+                       ErrorCode::IoError);
+        }
+        return Err("저널에 기록하지 못해 이 획을 되돌렸다 — 기록 없이 그리지 않는다"
+                   "(docs/06 결정 ④)",
+                   ErrorCode::IoError);
+    }
+
     doc->markDirty();
     s.noteDirty(dirtyRect);
-    // 🔴 이 세션의 획을 센다. 출처 칸은 언제나 Agent 다.
+    // 🔴 이 세션의 붓질을 센다(축 A). 출처 칸은 언제나 Agent 다.
     s.countStroke();
+    s.countChangedTiles(changed); // 축 C — 실제로 바뀐 타일 수
 
     Json out = Json::object();
     out.set("layer", Json::integer(layer.value()->id()));
@@ -360,6 +504,9 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
     out.set("origin", Json::string(strokeOriginName(pipe.source().value().origin())));
     out.set("agentId", Json::string(std::string(s.agentId().view())));
     out.set("undoComplete", Json::boolean(undoComplete));
+    // 🔴 기록되었는가를 **숨기지 않는다.** 레코더가 없으면 없다고 적는다 —
+    //    "기록된 줄 알았는데 아니었다"가 가장 나쁜 결과다.
+    out.set("recorded", Json::boolean(entry.recording()));
     if (!pipe.lastError().message.empty()) {
         // 핫 패스에서 삼킨 오류는 숨기지 않는다.
         out.set("engineNote", Json::string(pipe.lastError().message));
@@ -382,6 +529,10 @@ Result<Json> fill(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
+    const Result<void> ok = requireRecording(*doc);
+    if (!ok.ok()) {
+        return ok.error();
+    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
@@ -402,18 +553,33 @@ Result<Json> fill(AgentSession& s, const Json& req) {
         img.pixels[i + 2] = color.value().b;
         img.pixels[i + 3] = color.value().a;
     }
-    const Result<void> w =
-        writeRegionWithUndo(*doc, layer.value()->id(), area.value(), img, "에이전트 채우기");
+    const Result<void> masked =
+        maskRegionImage(*doc, layer.value(), area.value(), img, false);
+    if (!masked.ok()) {
+        return masked.error();
+    }
+    u32 changed = 0;
+    const Result<void> w = writeRegionWithUndo(*doc, layer.value()->id(), area.value(), img,
+                                               "에이전트 채우기", changed);
     if (!w.ok()) {
         return w.error();
     }
-    s.noteDirty(area.value());
-    s.countStroke();
+    // 🔴 붓질이 아니다. 합성 프레임 **쌍**으로 기록하고 축 B 에 센다(docs/06 결정 ①·②).
+    //    "AI 획 1개"로 줄여 적으면 캔버스 전체를 칠하고도 0.05% 로 보인다.
+    const Result<void> rec = finishRegionOp(s, *doc, RegionOpKind::Fill, area.value(),
+                                            layer.value()->id(), false, changed);
+    if (!rec.ok()) {
+        return rec.error();
+    }
 
     Json out = Json::object();
     out.set("layer", Json::integer(layer.value()->id()));
     out.set("area", jsonRect(area.value()));
     out.set("origin", Json::string(strokeOriginName(s.strokeSource().origin())));
+    // 🔴 붓질이 아니라는 사실과 면적을 응답에도 싣는다. 세는 칸이 다르다(H3).
+    out.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Fill)));
+    out.set("changedTiles", Json::integer(static_cast<i64>(changed)));
+    out.set("recorded", Json::boolean(doc->recorder() != nullptr));
     return Ok(std::move(out));
 }
 
@@ -423,6 +589,10 @@ Result<Json> erase(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
+    const Result<void> ok = requireRecording(*doc);
+    if (!ok.ok()) {
+        return ok.error();
+    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
@@ -431,18 +601,29 @@ Result<Json> erase(AgentSession& s, const Json& req) {
     if (!area.ok()) {
         return area.error();
     }
-    const ora::Image8 img = ora::Image8::make(area.value().width, area.value().height);
-    const Result<void> w =
-        writeRegionWithUndo(*doc, layer.value()->id(), area.value(), img, "에이전트 지우기");
+    ora::Image8 img = ora::Image8::make(area.value().width, area.value().height);
+    const Result<void> masked = maskRegionImage(*doc, layer.value(), area.value(), img, true);
+    if (!masked.ok()) {
+        return masked.error();
+    }
+    u32 changed = 0;
+    const Result<void> w = writeRegionWithUndo(*doc, layer.value()->id(), area.value(), img,
+                                               "에이전트 지우기", changed);
     if (!w.ok()) {
         return w.error();
     }
-    s.noteDirty(area.value());
-    s.countStroke();
+    const Result<void> rec = finishRegionOp(s, *doc, RegionOpKind::Erase, area.value(),
+                                            layer.value()->id(), true, changed);
+    if (!rec.ok()) {
+        return rec.error();
+    }
 
     Json out = Json::object();
     out.set("layer", Json::integer(layer.value()->id()));
     out.set("area", jsonRect(area.value()));
+    out.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Erase)));
+    out.set("changedTiles", Json::integer(static_cast<i64>(changed)));
+    out.set("recorded", Json::boolean(doc->recorder() != nullptr));
     return Ok(std::move(out));
 }
 
@@ -452,6 +633,10 @@ Result<Json> gradient(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
+    const Result<void> ok = requireRecording(*doc);
+    if (!ok.ok()) {
+        return ok.error();
+    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
@@ -506,18 +691,29 @@ Result<Json> gradient(AgentSession& s, const Json& req) {
             px[3] = mix(from.value().a, to.value().a);
         }
     }
-    const Result<void> w =
-        writeRegionWithUndo(*doc, layer.value()->id(), r, img, "에이전트 그라데이션");
+    const Result<void> masked = maskRegionImage(*doc, layer.value(), r, img, false);
+    if (!masked.ok()) {
+        return masked.error();
+    }
+    u32 changed = 0;
+    const Result<void> w = writeRegionWithUndo(*doc, layer.value()->id(), r, img,
+                                               "에이전트 그라데이션", changed);
     if (!w.ok()) {
         return w.error();
     }
-    s.noteDirty(r);
-    s.countStroke();
+    const Result<void> rec = finishRegionOp(s, *doc, RegionOpKind::Gradient, r,
+                                            layer.value()->id(), false, changed);
+    if (!rec.ok()) {
+        return rec.error();
+    }
 
     Json out = Json::object();
     out.set("layer", Json::integer(layer.value()->id()));
     out.set("area", jsonRect(r));
     out.set("angle", Json::number(angleDeg));
+    out.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Gradient)));
+    out.set("changedTiles", Json::integer(static_cast<i64>(changed)));
+    out.set("recorded", Json::boolean(doc->recorder() != nullptr));
     return Ok(std::move(out));
 }
 
@@ -532,6 +728,10 @@ Result<Json> transform(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
+    const Result<void> okRec = requireRecording(*doc);
+    if (!okRec.ok()) {
+        return okRec.error();
+    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
@@ -572,18 +772,29 @@ Result<Json> transform(AgentSession& s, const Json& req) {
                      static_cast<usize>(dst.x - uni.x) * 4u;
         std::copy(srcRow, srcRow + static_cast<usize>(src.width) * 4u, dstRow);
     }
+    u32 changed = 0;
     const Result<void> w =
-        writeRegionWithUndo(*doc, layer.value()->id(), uni, out, "에이전트 이동");
+        writeRegionWithUndo(*doc, layer.value()->id(), uni, out, "에이전트 이동", changed);
     if (!w.ok()) {
         return w.error();
     }
-    s.noteDirty(uni);
+    // 🔴 이동도 **영역을 직접 쓴다.** 붓질이 아니지만 픽셀이 바뀌었으므로 기록에 남는다 —
+    //    기록 밖에서 바뀐 픽셀이 있으면 그 .ora 의 prooflog 가 캔버스를 설명하지 못한다
+    //    (docs/06 결정 ① "앞으로 생길 모든 영역 직접쓰기" · 6절 H1).
+    const Result<void> rec = finishRegionOp(s, *doc, RegionOpKind::Transform, uni,
+                                            layer.value()->id(), false, changed);
+    if (!rec.ok()) {
+        return rec.error();
+    }
 
     Json res = Json::object();
     res.set("layer", Json::integer(layer.value()->id()));
     res.set("from", jsonRect(src));
     res.set("to", jsonRect(dst));
     res.set("moved", jsonRect(uni));
+    res.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Transform)));
+    res.set("changedTiles", Json::integer(static_cast<i64>(changed)));
+    res.set("recorded", Json::boolean(doc->recorder() != nullptr));
     return Ok(std::move(res));
 }
 

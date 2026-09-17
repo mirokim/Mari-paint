@@ -4,6 +4,7 @@
 #include <mari/agent/view.hpp>
 #include <mari/cli/server.hpp>
 #include <mari/mcp/server.hpp>
+#include <mari/record/sigan_recorder.hpp>
 #include <mari/ora/ora.hpp>
 
 #include <chrono>
@@ -19,7 +20,8 @@ namespace {
 
 bool wantsValue(std::string_view opt) {
     return opt == "--script" || opt == "--exec" || opt == "--serve" || opt == "--out-dir" ||
-           opt == "--agent-id" || opt == "--view";
+           opt == "--agent-id" || opt == "--view" || opt == "--proof-out" ||
+           opt == "--journal-dir";
 }
 
 /// 파일 이름으로 쓸 수 없는 문자를 걷어낸다(연산 이름이 경로를 벗어나지 않게).
@@ -39,7 +41,10 @@ std::string sanitize(std::string_view s) {
 /// 이 세션이 만든 획의 출처 집계.
 /// 🔴 숫자만 낸다. "human-only"/"ai-assisted" 같은 등급 문자열은 만들지 않는다 —
 ///    판정은 Sigan 의 몫이다(docs/03 2절 · docs/05 3.2).
-Json originsJson(const agent::AgentSession& session) {
+/// 🔴 **세 축을 따로** 낸다(docs/06 결정 ②). 붓질 수 하나만 내면 캔버스 전체를 칠한
+///    fill 한 번이 "AI 획 0개"로 보인다 — 참인 숫자 하나로 만든 거짓이다(6절 H3).
+Json originsJson(const agent::AgentSession& session,
+                 const record::SiganRecorderFactory* recorders) {
     const StrokeOriginStats& s = session.originStats();
     Json counts = Json::object();
     counts.set("humanPen", Json::integer(s.count(StrokeOrigin::HumanPen)));
@@ -52,10 +57,35 @@ Json originsJson(const agent::AgentSession& session) {
     Json out = Json::object();
     out.set("agentId", Json::string(std::string(session.agentId().view())));
     out.set("originCounts", std::move(counts));
+    // 축 A — 붓질.
     out.set("humanStrokes", Json::integer(s.human()));
     out.set("agentStrokes", Json::integer(s.agent()));
     out.set("totalStrokes", Json::integer(s.total()));
     out.set("agentStrokeRatio", Json::number(s.agentRatio()));
+    // 축 B — 영역 연산(fill·erase·gradient·transform). 붓질과 같은 칸이 아니다.
+    Json regions = Json::object();
+    regions.set("human", Json::integer(session.regionOpStats().human()));
+    regions.set("agent", Json::integer(session.regionOpStats().agent()));
+    regions.set("total", Json::integer(session.regionOpStats().total()));
+    out.set("regionOps", std::move(regions));
+    // 축 C — 변경된 타일 수(픽셀이 아니다).
+    out.set("changedTiles", Json::integer(session.changedTiles()));
+
+    // 기록이 켜져 있으면 **문서 구간**의 집계도 함께 낸다 — 이쪽은 사람 획까지 센다
+    // (같은 문서를 사람이 이어 그리면 여기 잡힌다. 세션 숫자는 세션 것만 센다).
+    out.set("recorded", Json::boolean(recorders != nullptr));
+    if (recorders != nullptr) {
+        const agent::RecordingTally t = recorders->totalTally();
+        Json seg = Json::object();
+        seg.set("humanBrushStrokes", Json::integer(t.strokes.human()));
+        seg.set("agentBrushStrokes", Json::integer(t.strokes.agent()));
+        seg.set("humanRegionOps", Json::integer(t.regionOps.human()));
+        seg.set("agentRegionOps", Json::integer(t.regionOps.agent()));
+        seg.set("humanChangedTiles", Json::integer(t.humanTiles()));
+        seg.set("agentChangedTiles", Json::integer(t.agentTiles()));
+        seg.set("journals", Json::integer(static_cast<i64>(recorders->journals().size())));
+        out.set("documentSegments", std::move(seg));
+    }
     return out;
 }
 
@@ -82,6 +112,13 @@ std::string usageText() {
         "                        region:[x,y,w,h]. 연산이 직접 view 를 주면 그쪽이 이긴다.\n"
         "                        기본값은 none 이다 — stdout 이 파이프라서 base64 를\n"
         "                        말없이 흘리지 않는다. --out-dir/--embed-images 를 주면 dirty.\n"
+        "  --journal-dir <dir>   기록 저널을 이 디렉터리에 남긴다(문서 하나 = 저널 하나).\n"
+        "                        🔴 주지 않으면 기록기가 꽂히지 않는다 — 그리기는 되지만\n"
+        "                           기록이 남지 않는다. 응답의 recorded 가 그 사실을 말한다.\n"
+        "  --proof-out <path>    이 세션의 기록을 무서명 과정 로그(JSON)로 떨군다.\n"
+        "                        🔴 **인증서가 아니다.** 서명도 해시체인도 없고 등급은\n"
+        "                           \"unsigned\" 하나뿐이다 — 봉인은 Sigan 의 몫이다(docs/03 2절).\n"
+        "                           저널이 여럿이면 <path>.1, <path>.2 … 로 이어 붙는다.\n"
         "  --agent-id <id>       붓을 쥐는 에이전트 이름(기본 mari-cli).\n"
         "                        🔴 이 경로로 들어온 획은 무조건 origin=agent 다.\n"
         "                           origin 을 고르는 옵션은 없다(docs/05 3.1).\n"
@@ -139,6 +176,10 @@ Result<CliOptions> parseArgs(const std::vector<std::string>& args) {
             o.stdio = true;
         } else if (opt == "--out-dir") {
             o.outDir = value;
+        } else if (opt == "--proof-out") {
+            o.proofOut = value;
+        } else if (opt == "--journal-dir") {
+            o.journalDir = value;
         } else if (opt == "--agent-id") {
             o.agentId = value;
         } else if (opt == "--view") {
@@ -254,7 +295,7 @@ Result<void> spillImage(Json& envelope, const std::string& outDir, usize seq, bo
 }
 
 Json runOps(agent::AgentSession& session, const std::vector<Json>& ops, const CliOptions& opt,
-            std::ostream& err, usize& failed) {
+            std::ostream& err, usize& failed, const record::SiganRecorderFactory* recorders) {
     Json results = Json::array();
     failed = 0;
     bool stopped = false;
@@ -320,7 +361,7 @@ Json runOps(agent::AgentSession& session, const std::vector<Json>& ops, const Cl
     out.set("stopped", Json::boolean(stopped));
     out.set("results", std::move(results));
     // 🔴 출처 집계를 **항상** 붙인다. 물어봐야 나오면 안 된다(docs/05 3.2).
-    out.set("strokeOrigins", originsJson(session));
+    out.set("strokeOrigins", originsJson(session, recorders));
     return out;
 }
 
@@ -396,6 +437,24 @@ int runCli(const std::vector<std::string>& args, std::ostream& out, std::ostream
         }
     }
 
+    // 🔴 기록 배선(docs/06). **공장을 세션보다 먼저 만든다** — 세션 안의 Application 이
+    //    이 공장을 들고 있으므로 공장이 더 오래 살아야 한다.
+    //    꽂지 않으면 널 레코더다: agent-api 는 그대로 돌고, 기록만 남지 않는다.
+    //    Sigan 미설치가 정상 상태라는 규정(docs/03 5.1)이 여기서도 그대로다.
+    std::unique_ptr<record::SiganRecorderFactory> recorders;
+    if (!opt.journalDir.empty() || !opt.proofOut.empty()) {
+        record::RecordingConfig rc;
+        rc.journalDir = opt.journalDir;
+        // 프레임에는 32비트 다이제스트만 실린다. 사람이 읽을 이름은 로그가 들고 있는다.
+        Result<AgentId> id = AgentId::make(agentId);
+        if (id.ok()) {
+            rc.agents.push_back(id.value());
+        }
+        // 싱크는 붙이지 않는다 — Sigan 파이프 연결은 이 CLI 의 일이 아니다.
+        // 정본은 저널이고, 저널만으로 기록은 완전하다(docs/03 4.2 · 6절).
+        recorders = std::make_unique<record::SiganRecorderFactory>(std::move(rc));
+    }
+
     // 🔴 세션이 열리는 순간 출처가 정해진다. 이름이 없으면 열리지 않는다.
     Result<std::unique_ptr<agent::AgentSession>> opened = agent::AgentSession::open(agentId);
     if (!opened.ok()) {
@@ -403,6 +462,7 @@ int runCli(const std::vector<std::string>& args, std::ostream& out, std::ostream
         return kExitFailed;
     }
     agent::AgentSession& session = *opened.value();
+    session.application().setRecorderFactory(recorders.get());
 
     // ── --mcp --stdio (docs/05 2.8 · 4절) ────────────────────────────────
     // 🔴 여기서 하는 일은 스트림을 물려 주는 것뿐이다. 도구 목록도, 이미지 포장도
@@ -461,7 +521,7 @@ int runCli(const std::vector<std::string>& args, std::ostream& out, std::ostream
         if (!r.ok()) {
             root.set("error", Json::string(r.message()));
         }
-        root.set("strokeOrigins", originsJson(session));
+        root.set("strokeOrigins", originsJson(session, recorders.get()));
         out << root.dump(opt.pretty ? 2 : 0) << "\n";
         return r.ok() ? kExitOk : kExitFailed;
     }
@@ -491,7 +551,61 @@ int runCli(const std::vector<std::string>& args, std::ostream& out, std::ostream
     }
 
     usize failed = 0;
-    const Json root = runOps(session, ops, opt, err, failed);
+    Json root = runOps(session, ops, opt, err, failed, recorders.get());
+
+    // ── --proof-out (docs/03 6절 · docs/06) ──────────────────────────────
+    // 🔴 만드는 것은 **무서명 로그**다. 인증서가 아니다.
+    if (!opt.proofOut.empty() && recorders) {
+        Json written = Json::array();
+        const std::vector<std::string>& journals = recorders->journals();
+        for (usize i = 0; i < journals.size(); ++i) {
+            // 살아 있는 구간이면 축 C(변경 타일 수)까지 아는 쪽에서 뽑는다.
+            Result<std::string> log = Err("", ErrorCode::Unknown);
+            record::SiganRecorder* live = nullptr;
+            for (usize k = 0; k < recorders->liveCount(); ++k) {
+                record::SiganRecorder* r = recorders->liveAt(k);
+                if (r != nullptr && r->journalPath() == journals[i]) {
+                    live = r;
+                    break;
+                }
+            }
+            if (live != nullptr) {
+                log = live->buildProofLog();
+            } else {
+                record::RecordingConfig rc;
+                Result<AgentId> id = AgentId::make(agentId);
+                if (id.ok()) {
+                    rc.agents.push_back(id.value());
+                }
+                log = record::proofLogFromJournal(journals[i], rc);
+            }
+            const std::string path =
+                i == 0 ? opt.proofOut : opt.proofOut + "." + std::to_string(i);
+            Json entry = Json::object();
+            entry.set("journal", Json::string(journals[i]));
+            entry.set("path", Json::string(path));
+            if (!log.ok()) {
+                // 기록을 못 뽑았다고 그리기 결과를 뒤집지 않는다. 그 사실만 적는다.
+                entry.set("error", Json::string(log.message()));
+            } else {
+                const Result<void> w = ora::writeFileBytes(
+                    path, reinterpret_cast<const u8*>(log.value().data()), log.value().size());
+                if (!w.ok()) {
+                    entry.set("error", Json::string(w.message()));
+                } else {
+                    entry.set("bytes", Json::integer(static_cast<i64>(log.value().size())));
+                }
+            }
+            written.push(std::move(entry));
+        }
+        // 🔴 이름부터 "인증서 아님"을 말한다. 등급은 로그 안에 "unsigned" 하나뿐이다.
+        root.set("proofLogs", std::move(written));
+        root.set("proofLogNotice",
+                 Json::string("무서명 과정 로그다. 인증서가 아니다 — 봉인·서명은 Sigan 이 한다"));
+    } else if (!opt.proofOut.empty()) {
+        root.set("proofLogNotice", Json::string("기록기가 꽂히지 않아 떨굴 로그가 없다"));
+    }
+
     out << root.dump(opt.pretty ? 2 : 0) << "\n";
     if (!opt.quiet) {
         err << "끝: 연산 " << ops.size() << "개 중 " << failed << "개 실패\n";

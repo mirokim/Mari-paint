@@ -15,7 +15,7 @@
 //
 // 무엇을 담나:
 //   · 레이어별 `TileMap::snapshot()` — 타일 포인터만 공유한다(픽셀 복사 0)
-//   · 트리 구조(부모·순서)와 레이어 속성, 캔버스 크기, 활성 레이어, 선택 영역
+//   · 트리 구조(부모·순서)와 레이어 속성, 캔버스 크기, 활성 레이어, **선택 마스크**
 //   · 지워진 레이어의 `LayerPtr` 를 **붙잡아 둔다** → 되돌릴 때 id 가 살아 돌아온다
 //     (core 의 `reattachLayer()`. 새로 만들면 id 가 바뀌어 에이전트 주소가 무효가 된다)
 //
@@ -26,6 +26,7 @@
 
 #include <mari/core/layer.hpp>
 #include <mari/core/result.hpp>
+#include <mari/core/selection.hpp>
 #include <mari/core/types.hpp>
 
 #include <string>
@@ -66,7 +67,8 @@ struct DocSnapshot {
     SnapshotId parentSnapshot = kInvalidSnapshotId;
     Size canvasSize{};
     LayerId activeLayer = kInvalidLayerId;
-    Rect selection{};
+    /// 🔴 선택도 되돌린다. 마스크 복사는 타일 핸들만 복제하므로 여전히 픽셀 복사 0이다.
+    SelectionMask selection;
     std::vector<SnapshotNode> nodes;
     /// 만든 시각(단조 시계 기준 ms). 벽시계가 아니다 — 순서만 보장한다.
     f64 tMs = 0.0;
@@ -79,7 +81,7 @@ struct DocSnapshot {
 
 /// 트리를 그대로 담는다. O(레이어 수). 픽셀 복사 없음.
 [[nodiscard]] Result<DocSnapshot> takeSnapshot(const LayerTree& tree, std::string label,
-                                               const Rect& selection);
+                                               const SelectionMask& selection);
 
 /// 스냅샷을 트리에 되돌린다. O(레이어 수). 픽셀 복사 없음.
 ///
@@ -87,7 +89,7 @@ struct DocSnapshot {
 /// · 스냅샷 이후 지워진 레이어는 **같은 id 로** 되살린다.
 /// · 픽셀·속성·순서·활성 레이어를 스냅샷 시점으로 되돌린다.
 [[nodiscard]] Result<void> restoreSnapshot(LayerTree& tree, const DocSnapshot& snap,
-                                           Rect* outSelection = nullptr);
+                                           SelectionMask* outSelection = nullptr);
 
 /// 두 상태의 차이. 픽셀을 비교하지 않고 **타일 포인터**를 비교한다 — COW 라서
 /// 안 바뀐 타일은 포인터가 같다. 그래서 diff 도 O(타일 수)지 O(픽셀 수)가 아니다.

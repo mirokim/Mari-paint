@@ -12,66 +12,73 @@ namespace mari::agent {
 
 /// EventHub 의 리스너. 앱 이벤트를 세션 큐로 옮긴다.
 /// 🔴 Sigan 에 쓰는 것과 **같은 이벤트 버스**다(docs/05 2.7). 두 번 만들지 않는다.
+///
+/// 🔴 여기는 **기록 경로**(app/events.hpp ①)다 — 동기 호출이고 큐가 없으므로
+///    세션 큐에 넣기 전에 이벤트가 사라질 수 없다. 넘치면 버리는 것은 세션 큐의
+///    사정이고(`events.poll` 이 remaining 으로 말한다), 버스의 사정이 아니다.
+///    타입별 콜백이 아니라 `onEvent` 하나만 덮어쓴다 — 둘 다 덮으면 두 번 받는다.
 class AgentSession::Listener final : public app::IAppEventListener {
 public:
     explicit Listener(AgentSession& s) : s_(s) {}
 
-    void onDocumentOpened(const std::string& path, const std::string& fileHash, i32 w,
-                          i32 h) override {
-        Json d = Json::object();
-        d.set("path", Json::string(path));
-        d.set("fileHash", Json::string(fileHash));
-        d.set("width", Json::integer(static_cast<i64>(w)));
-        d.set("height", Json::integer(static_cast<i64>(h)));
-        s_.pushEvent("documentOpened", std::move(d));
-    }
-    void onDocumentSaved(const std::string& path, const std::string& fileHash,
-                         i64 sizeBytes) override {
-        Json d = Json::object();
-        d.set("path", Json::string(path));
-        d.set("fileHash", Json::string(fileHash));
-        d.set("sizeBytes", Json::integer(sizeBytes));
-        s_.pushEvent("documentSaved", std::move(d));
-    }
-    void onCanvasSnapshot(const std::string& canvasHash) override {
-        Json d = Json::object();
-        d.set("canvasHash", Json::string(canvasHash));
-        s_.pushEvent("canvasSnapshot", std::move(d));
-    }
-    void onViewChanged(f64 zoom, f64 rotationDeg) override {
-        Json d = Json::object();
-        d.set("zoom", Json::number(zoom));
-        d.set("rotationDeg", Json::number(rotationDeg));
-        s_.pushEvent("viewChanged", std::move(d));
-    }
-    void onPaste(app::PasteSource source) override {
-        Json d = Json::object();
-        d.set("source", Json::string(app::pasteSourceName(source)));
-        s_.pushEvent("paste", std::move(d));
-    }
-    void onUndo(i32 steps) override {
-        Json d = Json::object();
-        d.set("steps", Json::integer(static_cast<i64>(steps)));
-        s_.pushEvent("undo", std::move(d));
-    }
-    void onLayerChanged(LayerId layerId, const std::string& changeKind) override {
-        Json d = Json::object();
-        d.set("layer", Json::integer(layerId));
-        d.set("change", Json::string(changeKind));
-        s_.pushEvent("layerChanged", std::move(d));
-    }
-    void onStrokeCompleted(LayerId layerId, u64 firstSeq, u64 lastSeq, i32 pointCount) override {
-        Json d = Json::object();
-        d.set("layer", Json::integer(layerId));
-        d.set("firstSeq", Json::integer(firstSeq));
-        d.set("lastSeq", Json::integer(lastSeq));
-        d.set("pointCount", Json::integer(static_cast<i64>(pointCount)));
-        s_.pushEvent("strokeCompleted", std::move(d));
+    void onEvent(const app::AppEvent& ev) override {
+        s_.pushEvent(app::appEventKindName(ev.kind), appEventToJson(ev));
     }
 
 private:
     AgentSession& s_;
 };
+
+// ── 이벤트 값 → JSON ────────────────────────────────────────────────────
+
+Json appEventToJson(const app::AppEvent& ev) {
+    Json d = Json::object();
+    // 🔴 seq 는 종류를 가리지 않고 싣는다. 역압으로 요약당한 구독자가
+    //    **몇 개를 못 봤는지 스스로 알 수 있는 유일한 단서**다(docs/07 4절).
+    d.set("seq", Json::integer(static_cast<i64>(ev.seq)));
+    switch (ev.kind) {
+    case app::AppEventKind::DocumentOpened:
+        d.set("path", Json::string(ev.path));
+        d.set("fileHash", Json::string(ev.hash));
+        d.set("width", Json::integer(static_cast<i64>(ev.width)));
+        d.set("height", Json::integer(static_cast<i64>(ev.height)));
+        break;
+    case app::AppEventKind::DocumentSaved:
+        d.set("path", Json::string(ev.path));
+        d.set("fileHash", Json::string(ev.hash));
+        d.set("sizeBytes", Json::integer(ev.sizeBytes));
+        break;
+    case app::AppEventKind::CanvasSnapshot:
+        d.set("canvasHash", Json::string(ev.hash));
+        break;
+    case app::AppEventKind::ViewChanged:
+        d.set("zoom", Json::number(ev.zoom));
+        d.set("rotationDeg", Json::number(ev.rotationDeg));
+        break;
+    case app::AppEventKind::Paste:
+        d.set("source", Json::string(app::pasteSourceName(ev.source)));
+        break;
+    case app::AppEventKind::Undo:
+        d.set("steps", Json::integer(static_cast<i64>(ev.steps)));
+        break;
+    case app::AppEventKind::LayerChanged:
+        d.set("layer", Json::integer(ev.layerId));
+        d.set("change", Json::string(ev.change));
+        break;
+    case app::AppEventKind::StrokeCompleted:
+        d.set("layer", Json::integer(ev.layerId));
+        d.set("firstSeq", Json::integer(static_cast<i64>(ev.firstSeq)));
+        d.set("lastSeq", Json::integer(static_cast<i64>(ev.lastSeq)));
+        d.set("pointCount", Json::integer(static_cast<i64>(ev.pointCount)));
+        break;
+    case app::AppEventKind::Progress:
+        d.set("task", Json::string(ev.change));
+        d.set("fraction", Json::number(ev.fraction));
+        d.set("done", Json::boolean(ev.done));
+        break;
+    }
+    return d;
+}
 
 // ── 필압 프리셋 ──────────────────────────────────────────────────────────
 
@@ -143,7 +150,15 @@ AgentSession::AgentSession(agent::AgentStrokeGate gate) : gate_(gate) {
     installBuiltinBrushes();
 }
 
-AgentSession::~AgentSession() { (void)app_.events().removeListener(listener_.get()); }
+AgentSession::~AgentSession() {
+    // 🔴 푸시 구독자를 먼저 뗀다. 콜백이 잡고 있는 것(연결·버퍼)이 세션보다 먼저
+    //    죽는 일을 막는다 — unsubscribe 는 그 구독자 스레드를 합류시키고 돌아온다.
+    for (const u64 id : pushSubs_) {
+        (void)app_.events().unsubscribe(id);
+    }
+    pushSubs_.clear();
+    (void)app_.events().removeListener(listener_.get());
+}
 
 Result<std::unique_ptr<AgentSession>> AgentSession::open(std::string_view agentId) {
     // 🔴 게이트가 안 열리면 세션도 없다. 익명 AI 획은 만들지 않는다.
@@ -250,6 +265,52 @@ Result<app::Document*> AgentSession::requireDocument() {
         return Err("문서가 닫혀 있다", ErrorCode::NotFound);
     }
     return Ok(d);
+}
+
+// ── 푸시 구독 (docs/05 2.7 · docs/07) ───────────────────────────────────
+
+u64 AgentSession::subscribePush(std::vector<std::string> kinds, EventPushFn fn,
+                                usize capacity) {
+    if (!fn) {
+        return 0;
+    }
+    // 🔴 콜백은 **구독자 전용 스레드**에서 불린다. 그래서 세션을 캡처하지 않는다 —
+    //    캡처하는 순간 "한 세션은 한 스레드" 규약이 깨지고, 그 경주는 조용히 틀린
+    //    숫자를 만든다. 필요한 것(필터·받는 쪽)만 값으로 가져간다.
+    app::SubscribeOptions opt;
+    opt.capacity = capacity == 0 ? 1 : capacity;
+    opt.onOverflow = app::OverflowPolicy::Summarize;
+    const app::SubscriptionId id = app_.events().subscribe(
+        [filter = std::move(kinds), sink = std::move(fn)](const app::AppEvent& ev) {
+            const char* kind = app::appEventKindName(ev.kind);
+            if (!filter.empty() &&
+                std::find(filter.begin(), filter.end(), std::string(kind)) == filter.end()) {
+                return;
+            }
+            sink(std::string(kind), appEventToJson(ev));
+        },
+        opt);
+    if (id != 0) {
+        pushSubs_.push_back(id);
+    }
+    return id;
+}
+
+bool AgentSession::unsubscribePush(u64 id) {
+    const auto it = std::find(pushSubs_.begin(), pushSubs_.end(), id);
+    if (it == pushSubs_.end()) {
+        return false;
+    }
+    pushSubs_.erase(it);
+    return app_.events().unsubscribe(id);
+}
+
+usize AgentSession::pushSubscriberCount() const noexcept {
+    return pushSubs_.size();
+}
+
+app::SubscriberStats AgentSession::pushStats(u64 id) const {
+    return const_cast<AgentSession*>(this)->app_.events().subscriberStats(id);
 }
 
 void AgentSession::subscribeEvents(std::vector<std::string> kinds) {

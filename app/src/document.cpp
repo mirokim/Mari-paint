@@ -42,7 +42,31 @@ std::string lower(std::string s) {
 } // namespace
 
 Document::Document(LayerTreePtr tree, std::string path, EventHub* events)
-    : tree_(std::move(tree)), path_(std::move(path)), events_(events) {}
+    : tree_(std::move(tree)), path_(std::move(path)), events_(events) {
+    // 🔴 문서의 시작 상태는 **전체 선택**(= 제한 없음)이다. 타일 0개라 공짜다.
+    //    "선택이 비었다"로 시작하면 아무 데도 못 그리는 문서가 된다.
+    selectionMask_ = SelectionMask::all(tree_->canvasSize());
+}
+
+void Document::setSelection(Rect r) {
+    const Size sz = tree_->canvasSize();
+    if (r.isEmpty()) {
+        selectionMask_ = SelectionMask::all(sz); // 선택 해제 = 제한 없음
+        return;
+    }
+    Result<SelectionMask> m = SelectionMask::fromRect(sz, r);
+    if (m.ok()) {
+        selectionMask_ = std::move(m).value();
+    }
+}
+
+void Document::setSelectionMask(SelectionMask m) {
+    const Size sz = tree_->canvasSize();
+    if (m.canvasSize() != sz) {
+        m.setCanvasSize(sz);
+    }
+    selectionMask_ = std::move(m);
+}
 
 Result<std::unique_ptr<Document>> Document::create(Size canvasSize, EventHub* events) {
     if (canvasSize.isEmpty()) {
@@ -97,7 +121,10 @@ Result<void> Document::exportComposite(std::vector<u8>& dst) {
 }
 
 Result<void> Document::paintPixels(LayerId id, const Rect& area, const u8* rgba, usize len,
-                                   std::string undoText) {
+                                   std::string undoText, u32* outChangedTiles) {
+    if (outChangedTiles != nullptr) {
+        *outChangedTiles = 0;
+    }
     if (closed_) {
         return Err("닫힌 문서다", ErrorCode::InvalidArgument);
     }
@@ -138,6 +165,10 @@ Result<void> Document::paintPixels(LayerId id, const Rect& area, const u8* rgba,
     }
 
     cmd->captureAfter(tiles);
+    if (outChangedTiles != nullptr) {
+        // 🔴 타일맵이 이미 정확히 세고 있는 값을 그대로 쓴다. 다시 재지 않는다.
+        *outChangedTiles = static_cast<u32>(cmd->changedTileCount());
+    }
     if (!cmd->empty()) {
         undo_.push(std::move(cmd));
     }
@@ -263,7 +294,17 @@ Result<void> Document::saveAs(const std::string& path, const std::string& format
     const std::string fmt = lower(format);
 
     if (fmt == "ora") {
-        const Result<void> r = ora::save(*tree_, path);
+        ora::SaveOptions opts;
+        // 🔴 Sigan 이 없어도 과정 기록은 파일 안에 남는다(docs/03 6절 · docs/06).
+        //    내용은 레코더가 만든다 — Document 는 문자열을 옮겨 담을 뿐이고,
+        //    prooflog 를 **만드는** 코드는 리포에 record/ 한 곳뿐이다.
+        if (recorder_ != nullptr) {
+            Result<std::string> log = recorder_->buildProofLog();
+            if (log.ok()) {
+                opts.proofLog = std::move(log).value();
+            }
+        }
+        const Result<void> r = ora::save(*tree_, path, opts);
         if (!r.ok()) {
             return r;
         }
@@ -330,6 +371,8 @@ Result<void> Document::close(bool saveChanges) {
     }
     closed_ = true;
     undo_.clear();
+    // 🔴 문서가 닫히면 작업 구간도 끝난다 — 저널이 여기서 닫힌다(docs/06 결정 ⑤).
+    recorder_.reset();
     return Ok();
 }
 

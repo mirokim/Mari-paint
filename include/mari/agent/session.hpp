@@ -35,6 +35,7 @@
 #include <mari/core/origin.hpp>
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -64,6 +65,10 @@ enum class PressureProfile : u8 {
 [[nodiscard]] Result<PressureProfile> pressureProfileFromName(std::string_view s);
 /// 진행도 t(0..1) 에서의 필압 배율 0..1.
 [[nodiscard]] f32 pressureProfileAt(PressureProfile p, f32 t) noexcept;
+
+/// 앱 이벤트 값 하나를 JSON 으로. **폴링도 푸시도 이 함수 하나를 쓴다** —
+/// 두 벌이 되면 "poll 로는 보이는데 push 로는 안 보이는 필드"가 생긴다.
+[[nodiscard]] Json appEventToJson(const app::AppEvent& ev);
 
 /// 세션이 모아 두는 이벤트 한 건(docs/05 2.7 — 같은 이벤트 버스를 쓴다).
 struct QueuedEvent {
@@ -111,9 +116,24 @@ public:
     void noteDirty(const Rect& r) noexcept { dirty_ = dirty_.united(r); }
     [[nodiscard]] Rect pendingDirty() const noexcept { return dirty_; }
 
-    /// 🔴 이 세션이 만든 획을 센다. 출처는 고를 수 없으므로 언제나 Agent 칸이다.
+    // ── 집계: **세 축을 따로 센다**(docs/06 결정 ②) ───────────────────────
+    //
+    // 🔴 붓질과 영역 연산을 같은 칸에 세지 않는다(docs/06 6절 H3).
+    //    캔버스 전체를 칠한 `fill` 한 번을 붓질 한 번으로 세면 "AI 0.05%" 가 되고,
+    //    그건 참인 숫자 하나로 만든 거짓이다.
+    // 🔴 세 축을 가중합한 단일 "기여도"는 만들지 않는다 — 가중치를 고르는 순간
+    //    그것이 판정이고, 판정은 Sigan 의 몫이다(docs/03 2절).
+
+    /// 축 A — 붓질 하나. 출처는 고를 수 없으므로 언제나 Agent 칸이다.
     void countStroke() noexcept { origins_.add(StrokeOrigin::Agent); }
+    /// 축 B — 영역 연산 하나(fill·erase·gradient·transform).
+    void countRegionOp() noexcept { regionOps_.add(StrokeOrigin::Agent); }
+    /// 축 C — 이번 연산이 **실제로 바꾼 타일 수**(픽셀이 아니다).
+    void countChangedTiles(u64 n) noexcept { changedTiles_ += n; }
+
     [[nodiscard]] const StrokeOriginStats& originStats() const noexcept { return origins_; }
+    [[nodiscard]] const StrokeOriginStats& regionOpStats() const noexcept { return regionOps_; }
+    [[nodiscard]] u64 changedTiles() const noexcept { return changedTiles_; }
 
     [[nodiscard]] SnapshotStore& snapshots() noexcept { return snaps_; }
     [[nodiscard]] const SnapshotStore& snapshots() const noexcept { return snaps_; }
@@ -129,7 +149,9 @@ public:
     BrushId addBrush(brush::MariBrushPreset preset, std::string source,
                      std::vector<std::string> notes);
 
-    // ── 이벤트 (docs/05 2.7) ─────────────────────────────────────────────
+    // ── 이벤트 (docs/05 2.7 · docs/07) ───────────────────────────────────
+
+    /// 폴링 경로(`events.subscribe` → `events.poll`).
     void subscribeEvents(std::vector<std::string> kinds);
     void unsubscribeEvents();
     [[nodiscard]] bool subscribed() const noexcept { return subscribed_; }
@@ -138,6 +160,26 @@ public:
     [[nodiscard]] usize queuedEventCount() const noexcept { return events_.size(); }
     /// 리스너가 부른다(공개인 이유: EventHub 가 콜백을 이 세션으로 보낸다).
     void pushEvent(std::string kind, Json data);
+
+    // ── 푸시 경로 — 폴링이 아니다 (docs/07) ───────────────────────────────
+
+    /// 이벤트를 **밀어받는** 콜백. `kind` 는 `app::appEventKindName()` 문자열 그대로다.
+    using EventPushFn = std::function<void(const std::string& kind, const Json& data)>;
+
+    /// 콜백을 건다. `kinds` 가 비면 전부 받는다. 돌아온 id 로 떼거나 통계를 본다.
+    ///
+    /// 🔴 콜백은 **다른 스레드에서** 불린다(app/events.hpp ② 관찰 경로).
+    ///    세션·문서를 만지지 마라. 느려도 된다 — 느린 만큼 자기 큐만 차고,
+    ///    넘치면 **그 구독자만** 요약당한다. 그리기도, Sigan 기록도 멀쩡하다.
+    /// 🔴 `events.subscribe`(폴링 큐)와 **독립이다.** 둘을 엮으면 한쪽을 끄는 것이
+    ///    다른 쪽을 조용히 끄게 된다.
+    [[nodiscard]] u64 subscribePush(std::vector<std::string> kinds, EventPushFn fn,
+                                    usize capacity = 256);
+    /// 그 구독자의 스레드를 세우고 합류시킨 뒤 돌아온다. 모르는 id 면 false.
+    bool unsubscribePush(u64 id);
+    [[nodiscard]] usize pushSubscriberCount() const noexcept;
+    /// 정직한 숫자: 몇 건 받았고 몇 건이 **이 구독자에게만** 버려졌나.
+    [[nodiscard]] app::SubscriberStats pushStats(u64 id) const;
 
     /// 세션이 처리한 요청 수(벤치·회귀 감시용).
     [[nodiscard]] u64 requestCount() const noexcept { return requests_; }
@@ -158,7 +200,10 @@ private:
     std::vector<BrushEntry> brushes_;
     std::deque<QueuedEvent> events_;
     std::vector<std::string> eventFilter_;
+    std::vector<u64> pushSubs_; ///< 이 세션이 건 푸시 구독. 소멸자가 전부 뗀다
     StrokeOriginStats origins_;
+    StrokeOriginStats regionOps_;
+    u64 changedTiles_ = 0;
     Rect dirty_{};
     BrushId currentBrush_ = kInvalidBrushId;
     BrushId nextBrushId_ = 1;
@@ -184,6 +229,7 @@ Result<Json> docOpen(AgentSession&, const Json&);
 Result<Json> docSave(AgentSession&, const Json&);
 Result<Json> docClose(AgentSession&, const Json&);
 Result<Json> docDescribe(AgentSession&, const Json&);
+Result<Json> docOrigins(AgentSession&, const Json&);
 Result<Json> capabilities(AgentSession&, const Json&);
 
 Result<Json> snapshotTake(AgentSession&, const Json&);

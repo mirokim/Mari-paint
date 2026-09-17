@@ -14,6 +14,10 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# 스트리밍 푸시 경로(docs/07)가 구독자마다 스레드를 하나씩 쓴다. 여기서 한 번만 건다 —
+# 모듈마다 따로 걸면 언젠가 한 곳이 빠지고 그 빌드만 링크가 깨진다.
+find_package(Threads REQUIRED)
+
 # 모든 모듈이 링크하는 공통 인터페이스 타깃.
 # include/ 경로와 경고 설정을 여기 한 곳에서 준다.
 add_library(mari_common INTERFACE)
@@ -21,6 +25,7 @@ add_library(mari::common ALIAS mari_common)
 target_include_directories(mari_common INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(mari_common INTERFACE cxx_std_20)
+target_link_libraries(mari_common INTERFACE Threads::Threads)
 
 if(MSVC)
     target_compile_options(mari_common INTERFACE /W4 /permissive-)
@@ -46,6 +51,10 @@ add_subdirectory(sigan)
 add_subdirectory(app)
 # agent — 🔴 에이전트 능력 계층(docs/05). MCP·CLI·COM 은 이 위에 씌우는 얇은 어댑터다.
 add_subdirectory(agent)
+# record — 🔴 기록 배선(docs/06). app·agent 가 모르는 sigan 을 여기서만 안다.
+#          `SiganPublisher::publish()` 호출자는 리포 전체에서 이 모듈 하나다.
+#          cli 보다 먼저여야 한다(cli 가 --proof-out 때문에 링크한다).
+add_subdirectory(record)
 # mcp — MCP 서버 어댑터(docs/05 4절 · A3). agent-api 위에 씌우는 **얇은** 전송 계층이고
 #       도구 목록은 agent 의 연산 표에서 생성된다. cli 보다 먼저여야 한다(cli 가 링크한다).
 add_subdirectory(mcp)

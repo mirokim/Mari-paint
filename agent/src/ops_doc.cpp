@@ -259,15 +259,26 @@ Result<Json> docDescribe(AgentSession& s, const Json&) {
                        std::to_string(n) + "개: " + layers;
     if (!doc->selection().isEmpty()) {
         const Rect r = doc->selection();
+        const SelectionMask& mask = doc->selectionMask();
         text += ". 선택 영역 " + std::to_string(r.width) + "x" + std::to_string(r.height) + " @ (" +
                 std::to_string(r.x) + "," + std::to_string(r.y) + ")";
+        // 🔴 경계 상자만 말하면 올가미·페더 선택이 사각형처럼 들린다. 실제로 선택된
+        //    픽셀 수를 같이 적어서 "사각형이 아니다"가 문장에서 드러나게 한다.
+        const i64 box = static_cast<i64>(r.width) * r.height;
+        const auto sel = static_cast<i64>(mask.selectedPixels());
+        if (sel < box) {
+            text += ", 그 안에서 실제로 선택된 픽셀 " + std::to_string(sel) + "개";
+        }
     }
     if (s.snapshots().size() != 0) {
         text += ". 스냅샷 " + std::to_string(s.snapshots().size()) + "개";
     }
     // 🔴 사실만 적는다. 등급은 없다(docs/03 2절 · docs/05 3.2).
-    const u64 agentStrokes = s.originStats().agent();
-    text += ". 이 세션의 AI 획 " + std::to_string(agentStrokes) + "개(에이전트 " +
+    // 🔴 세 축을 **따로** 말한다(docs/06 결정 ② · 6절 H3). 붓질 수만 말하면
+    //    캔버스 전체를 칠한 fill 한 번이 "AI 획 0개"로 들린다 — 참인 숫자로 만든 거짓이다.
+    text += ". 이 세션의 AI 획 " + std::to_string(s.originStats().agent()) + "개, 영역 연산 " +
+            std::to_string(s.regionOpStats().agent()) + "개, 바뀐 타일 " +
+            std::to_string(s.changedTiles()) + "개(에이전트 " +
             std::string(s.agentId().view()) + ")";
 
     Json out = Json::object();
@@ -279,19 +290,97 @@ Result<Json> docDescribe(AgentSession& s, const Json&) {
     out.set("layers", std::move(list));
     out.set("activeLayer", Json::integer(tree.activeLayer()));
     out.set("selection", jsonRect(doc->selection()));
+    out.set("selectionKind", Json::string(doc->selectionMask().isAll()
+                                              ? "all"
+                                              : (doc->selectionMask().isEmpty() ? "empty"
+                                                                                : "mask")));
+    out.set("selectionTiles", Json::integer(static_cast<i64>(doc->selectionMask().tileCount())));
+    out.set("selectedPixels",
+            Json::integer(static_cast<i64>(doc->selectionMask().selectedPixels())));
     out.set("path", Json::string(doc->fullPath()));
     out.set("saved", Json::boolean(doc->isSaved()));
     out.set("undoDepth", Json::integer(static_cast<i64>(doc->undoStack().undoCount())));
     out.set("snapshots", Json::integer(static_cast<i64>(s.snapshots().size())));
 
     // 출처 집계 — 숫자와 비율까지만. 판정은 Sigan 의 몫이다.
+    // 🔴 세 축을 따로 낸다. 하나로 합친 "기여도"는 만들지 않는다 —
+    //    가중치를 고르는 순간 그게 판정이고, 판정은 Sigan 의 몫이다(docs/03 2절).
     Json origins = Json::object();
     origins.set("agent", Json::integer(s.originStats().agent()));
     origins.set("human", Json::integer(s.originStats().human()));
     origins.set("total", Json::integer(s.originStats().total()));
     origins.set("agentRatio", Json::number(s.originStats().agentRatio()));
     origins.set("agentId", Json::string(std::string(s.agentId().view())));
+    // 축 B — 영역 연산(fill·erase·gradient·transform). 붓질과 같은 칸이 아니다.
+    Json regionOps = Json::object();
+    regionOps.set("agent", Json::integer(s.regionOpStats().agent()));
+    regionOps.set("human", Json::integer(s.regionOpStats().human()));
+    regionOps.set("total", Json::integer(s.regionOpStats().total()));
+    origins.set("regionOps", std::move(regionOps));
+    // 축 C — 이 세션이 바꾼 타일 수(픽셀이 아니다).
+    origins.set("changedTiles", Json::integer(s.changedTiles()));
+    origins.set("recorded", Json::boolean(doc->recorder() != nullptr));
     out.set("origins", std::move(origins));
+    return Ok(std::move(out));
+}
+
+// 🔴 docs/06 결정 ② — 출처별 집계를 **세 축**으로 내놓는다.
+//    MCP·CLI·JSON-RPC 가 전부 이 연산 하나를 통해 같은 숫자를 본다.
+//
+// 🔴 여기에 등급 문자열이 없다. 세 축을 가중합한 단일 "기여도"도 없다 —
+//    가중치를 고르는 순간 그것이 판정이고, 판정은 Sigan 의 몫이다(docs/03 2절).
+Result<Json> docOrigins(AgentSession& s, const Json&) {
+    Json out = Json::object();
+    out.set("agentId", Json::string(std::string(s.agentId().view())));
+    out.set("schema", Json::string("mari-origin-tally/1"));
+
+    const auto axis = [](const StrokeOriginStats& st) {
+        Json counts = Json::object();
+        counts.set("humanPen", Json::integer(st.count(StrokeOrigin::HumanPen)));
+        counts.set("humanMouse", Json::integer(st.count(StrokeOrigin::HumanMouse)));
+        counts.set("agent", Json::integer(st.count(StrokeOrigin::Agent)));
+        counts.set("imported", Json::integer(st.count(StrokeOrigin::Imported)));
+        counts.set("filter", Json::integer(st.count(StrokeOrigin::Filter)));
+        // 출처가 기록되지 않은 것. **0 이어야 정상이다.** 숨기지 않는다.
+        counts.set("unspecified", Json::integer(st.unspecified()));
+        Json a = Json::object();
+        a.set("byOrigin", std::move(counts));
+        a.set("human", Json::integer(st.human()));
+        a.set("agent", Json::integer(st.agent()));
+        a.set("total", Json::integer(st.total()));
+        return a;
+    };
+
+    // 축 A — 붓질. "몇 번 그었나".
+    Json strokes = axis(s.originStats());
+    strokes.set("agentRatio", Json::number(s.originStats().agentRatio()));
+    out.set("brushStrokes", std::move(strokes));
+    // 축 B — 영역 연산. fill 한 번을 붓질 한 번과 같은 칸에 세지 않는다(H3).
+    out.set("regionOps", axis(s.regionOpStats()));
+    // 축 C — 변경된 타일 수. "얼마나 칠했나". 픽셀이 아니라 타일이다
+    //        (정수라 안티에일리어싱 가장자리나 덧칠로 부풀릴 수 없다).
+    Json tiles = Json::object();
+    tiles.set("agent", Json::integer(s.changedTiles()));
+    tiles.set("tileSize", Json::integer(ApiLimits{}.tileSize));
+    out.set("changedTiles", std::move(tiles));
+
+    // 이 세션의 숫자는 **세션이 만든 것**만 센다. 문서에 붙은 기록 구간은 사람 획까지
+    // 포함할 수 있으므로, 기록이 붙어 있는지도 같이 알려 준다(docs/06 결정 ③·⑤).
+    const app::Document* doc = s.document();
+    out.set("recorded", Json::boolean(doc != nullptr && doc->recorder() != nullptr));
+    if (doc != nullptr && doc->recorder() != nullptr) {
+        const agent::RecordingTally& t = doc->recorder()->tally();
+        Json seg = Json::object();
+        seg.set("humanBrushStrokes", Json::integer(t.strokes.human()));
+        seg.set("agentBrushStrokes", Json::integer(t.strokes.agent()));
+        seg.set("humanRegionOps", Json::integer(t.regionOps.human()));
+        seg.set("agentRegionOps", Json::integer(t.regionOps.agent()));
+        seg.set("humanChangedTiles", Json::integer(t.humanTiles()));
+        seg.set("agentChangedTiles", Json::integer(t.agentTiles()));
+        seg.set("broken", Json::boolean(doc->recordingBroken()));
+        // 🔴 "문서 작업 구간"이다. agent-api 세션이 아니다(docs/06 결정 ⑤).
+        out.set("documentSegment", std::move(seg));
+    }
     return Ok(std::move(out));
 }
 
@@ -306,7 +395,7 @@ Result<Json> snapshotTake(AgentSession& s, const Json& req) {
     }
     std::string label = req["label"].isString() ? req["label"].asString() : std::string{};
     Result<DocSnapshot> snap = takeSnapshot(d.value()->layers(), std::move(label),
-                                            d.value()->selection());
+                                            d.value()->selectionMask());
     if (!snap.ok()) {
         return snap.error();
     }
@@ -331,19 +420,19 @@ Result<Json> snapshotRestore(AgentSession& s, const Json& req) {
     app::Document* doc = d.value();
 
     // 되돌리기 전후를 견줘 **바뀐 영역**을 알아낸다 — 그래야 view:dirty 가 의미를 갖는다.
-    Result<DocSnapshot> before = takeSnapshot(doc->layers(), std::string{}, doc->selection());
+    Result<DocSnapshot> before = takeSnapshot(doc->layers(), std::string{}, doc->selectionMask());
     if (!before.ok()) {
         return before.error();
     }
-    Rect selection{};
+    SelectionMask selection;
     const Result<void> r = restoreSnapshot(doc->layers(), *snap.value(), &selection);
     if (!r.ok()) {
         return r.error();
     }
-    doc->setSelection(selection);
+    doc->setSelectionMask(std::move(selection));
     doc->markDirty();
 
-    Result<DocSnapshot> after = takeSnapshot(doc->layers(), std::string{}, selection);
+    Result<DocSnapshot> after = takeSnapshot(doc->layers(), std::string{}, doc->selectionMask());
     if (!after.ok()) {
         return after.error();
     }
@@ -379,7 +468,7 @@ Result<Json> snapshotBranch(AgentSession& s, const Json& req) {
     }
     std::string label = req["label"].isString() ? req["label"].asString() : std::string{};
     Result<DocSnapshot> snap =
-        takeSnapshot(d.value()->layers(), std::move(label), d.value()->selection());
+        takeSnapshot(d.value()->layers(), std::move(label), d.value()->selectionMask());
     if (!snap.ok()) {
         return snap.error();
     }
@@ -412,7 +501,7 @@ Result<Json> snapshotDiff(AgentSession& s, const Json& req) {
         to = t.value();
     } else {
         Result<DocSnapshot> cur =
-            takeSnapshot(d.value()->layers(), std::string{}, d.value()->selection());
+            takeSnapshot(d.value()->layers(), std::string{}, d.value()->selectionMask());
         if (!cur.ok()) {
             return cur.error();
         }
@@ -453,7 +542,7 @@ Result<Json> batch(AgentSession& s, const Json& req) {
             return d.error();
         }
         doc = d.value();
-        Result<DocSnapshot> snap = takeSnapshot(doc->layers(), std::string{}, doc->selection());
+        Result<DocSnapshot> snap = takeSnapshot(doc->layers(), std::string{}, doc->selectionMask());
         if (!snap.ok()) {
             return snap.error();
         }
@@ -523,14 +612,14 @@ Result<Json> batch(AgentSession& s, const Json& req) {
     out.set("results", std::move(results));
 
     if (failed && atomic && haveRollback) {
-        Rect selection{};
+        SelectionMask selection;
         const Result<void> back = restoreSnapshot(doc->layers(), rollback, &selection);
         if (!back.ok()) {
             // 롤백조차 실패했으면 그걸 숨기면 안 된다. 캔버스 상태를 못 믿게 된다.
             return Err("batch 롤백에 실패했다(캔버스 상태를 신뢰하지 마라): " + back.message(),
                        ErrorCode::Unknown);
         }
-        doc->setSelection(selection);
+        doc->setSelectionMask(std::move(selection));
         // 롤백했으니 이번 batch 가 만든 더티는 없던 일이다. 화면은 되돌아간 영역을 봐야 한다.
         s.noteDirty(dirtyBefore);
         out.set("rolledBack", Json::boolean(true));

@@ -17,7 +17,9 @@ set(MARI_CLI_SOURCES
 
 add_library(mari_cli STATIC ${MARI_CLI_SOURCES})
 # mari::mcp — `--mcp --stdio` 가 쓰는 MCP 어댑터. 얇은 전송 계층이라 여기서 링크만 한다.
-target_link_libraries(mari_cli PUBLIC mari::common mari::agent mari::mcp mari::io_ora)
+# mari::record — `--proof-out`/`--journal-dir` 가 꽂는 기록 배선(docs/06).
+#                🔴 CLI 는 발행기를 **꽂기만** 한다. publish() 를 부르지 않는다.
+target_link_libraries(mari_cli PUBLIC mari::common mari::agent mari::mcp mari::io_ora mari::record)
 
 add_library(mari::cli ALIAS mari_cli)
 mari_register_module(mari_cli)

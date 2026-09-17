@@ -122,7 +122,13 @@ MARI_TEST(mcp_tools_generated) {
 
     // 미지원 연산은 도구로 나가지 않는다 — "되는 척하지 않는다"(docs/04 6절).
     // 대신 capabilities 도구가 그 목록과 이유를 전부 돌려주므로 정보는 남는다.
-    CHECK(unsupported > 0); // 지금 표에 미지원 연산이 실제로 있다(select.invert 등)
+    // 🔴 예전에는 여기서 "미지원 연산이 하나 이상 있다"를 요구했다(select.invert 등).
+    //    선택 마스크가 들어오면서 그 둘이 **실제로 지원된다.** 지금 표의 미지원 연산은 0개이고,
+    //    그래서 도구 수 = 연산 수다. 조건을 남겨 두면 기능이 는 것을 테스트가 벌하게 된다.
+    //    검사해야 할 불변식은 "미지원이면 도구로 안 나간다"이지 "미지원이 있다"가 아니다.
+    std::printf("  [표] 연산 %zu개 → 도구 %zu개 (미지원 %zu개)\n", agent::opTable().size(),
+                tools.size(), unsupported);
+    CHECK_EQ(tools.size() + unsupported, agent::opTable().size());
     for (const agent::OpSpec& op : agent::opTable()) {
         if (op.supported) {
             continue;
@@ -427,8 +433,17 @@ MARI_TEST(mcp_bad_requests_get_protocol_errors) {
     CHECK_EQ(errorOf(rpc("9", "tools/call", "{\"name\":\"render\",\"arguments\":5}"), __LINE__),
              mcp::kRpcInvalidParams);
     // 미지원 연산은 도구가 아니다 → 도구 이름으로도 부를 수 없다.
-    CHECK_EQ(errorOf(rpc("10", "tools/call", "{\"name\":\"select_invert\"}"), __LINE__),
-             mcp::kRpcInvalidParams);
+    // 🔴 이름을 박지 않는다. 표에서 미지원 연산을 찾아 그 도구 이름으로 부른다.
+    //    (지금 빌드에는 미지원 연산이 0개라 이 루프는 돌지 않는다 — 위 `mcp_tools_generated`
+    //     가 그 수를 출력한다.)
+    for (const agent::OpSpec& op : agent::opTable()) {
+        if (op.supported) {
+            continue;
+        }
+        const std::string call =
+            "{\"name\":\"" + mcp::toolNameOf(op.name) + "\"}";
+        CHECK_EQ(errorOf(rpc("10", "tools/call", call), __LINE__), mcp::kRpcInvalidParams);
+    }
 
     // 빈 줄·공백 줄은 메시지가 아니다. 응답하지 않는다.
     CHECK_EQ(server.handleLine(""), std::string());
