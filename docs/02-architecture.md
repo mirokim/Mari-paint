@@ -195,29 +195,27 @@ mari-paint.exe                       mari-8bf-host-x86.exe
 
 ---
 
-## 7. sigan 앱 연동 — **미확정, 제안안**
+## 7. Sigan (VASE9) 연동
 
-> sigan 앱은 사용자가 직접 만들(만든) 앱이므로 규격을 함께 정해야 한다.
-> 아래는 확정 전 제안이며, 요구사항을 받으면 갈아엎을 수 있다.
+**확정됨.** sigan = [`mirokim/VASE9`](https://github.com/mirokim/VASE9), 작업 과정 증명 서비스.
+전체 설계는 **[03-sigan-integration.md](./03-sigan-integration.md)**. 요약만 적는다.
 
-가장 유연한 형태는 **양방향 COM**이다.
+- Sigan은 C# WPF 기록기 + Next.js/Supabase 웹. `.sigan`(해시체인 + ES256 서명)이 계약 포맷.
+- 지금은 포토샵/CSP를 **밖에서** RawInput으로 훔쳐본다 → 캔버스 좌표·픽셀을 모른다.
+- Mari Paint는 **안에서 직접 발행**할 수 있다. 이게 두 제품 공통의 차별점이 된다.
 
-```
-sigan 앱  ──(IMariApplication)──►  Mari Paint      sigan이 Mari를 조종
-sigan 앱  ◄─(IMariEventSink)───   Mari Paint      Mari의 사건을 sigan이 수신
-```
+**채널 분리 (중요):**
 
-`IMariEventSink` (connection point)로 흘려보낼 이벤트 후보:
-`OnDocumentOpened` / `OnStrokeCompleted` / `OnLayerChanged` / `OnDocumentSaved`
+| 채널 | 방식 | 이유 |
+|---|---|---|
+| 제어 (세션·문서·페어링) | **COM** `IMariApplication` | 저빈도. C#은 COM 인터롭 내장 |
+| 스트로크 (초당 수백 점) | **명명 파이프** `sigan-native` | COM 마샬링은 16ms 예산을 깬다 |
+| 이벤트 (저장·뷰변경·붙여넣기) | **COM 연결점** `IMariEventSink` | Sigan의 빈 스키마 칸을 채운다 |
 
-이러면 sigan은 "그림 그리기를 시키는 쪽"도, "그림 변화를 지켜보는 쪽"도 될 수 있다.
+파이프 규약은 Sigan의 기존 `WinTabBridge`(ACL 제한 + 세션 토큰 핸드셰이크 + 고정 길이 프레임)를
+그대로 따른다. 검증된 패턴을 새로 만들 이유가 없다.
 
-**확정에 필요한 답:**
-1. sigan이 Mari에게 **시키는** 쪽인가, Mari의 결과를 **받는** 쪽인가, 둘 다인가?
-2. 주고받는 단위는 무엇인가 — 완성 이미지? 레이어? 스트로크 단위 실시간?
-3. sigan은 어떤 언어/런타임인가? (C#이면 COM 인터롭이 그대로 되고, Electron이면 브리지가 하나 더 필요하다)
-
----
+**입력 API 제약:** 3절 결정에 따라 Mari는 **Windows Ink 고정**이다 → [01](./01-research.md) 3.5절.
 
 ## 8. 성능 목표 (측정 가능한 수치로)
 
