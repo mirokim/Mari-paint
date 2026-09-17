@@ -1,0 +1,20 @@
+# Mari Paint 코드 스타일 — LLVM 기반, 4칸 들여쓰기, 100컬럼
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+AccessModifierOffset: -4
+PointerAlignment: Left
+ReferenceAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+FixNamespaceComments: true
+NamespaceIndentation: None
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive
+SpaceAfterTemplateKeyword: false
