@@ -20,6 +20,16 @@ namespace mari {
 /// 파일 로더(.ora)와 실행취소가 쓴다. 그룹 레이어면 실패한다.
 [[nodiscard]] Result<void> setLayerTiles(Layer& layer, TileMapPtr tiles);
 
+/// 트리에서 떼어낸 레이어를 **id 를 유지한 채** 다시 꽂는다.
+///
+/// 🔴 O(1) 스냅샷 복원(docs/05 2.2)을 위해 있다. `remove()` 된 레이어를
+///    스냅샷이 shared_ptr 로 붙잡고 있다가 되돌릴 때 이 함수로 제자리에 넣는다.
+///    새로 만들면 id 가 바뀌어 에이전트가 들고 있던 주소가 전부 무효가 된다.
+/// 이미 트리에 있는 id 거나, 다른 트리에서 온 레이어면 실패한다.
+[[nodiscard]] Result<void> reattachLayer(LayerTree& tree, const LayerPtr& layer,
+                                         LayerId parent = kInvalidLayerId, int index = -1);
+
+
 } // namespace mari
 
 #endif // MARI_CORE_LAYER_OPS_HPP

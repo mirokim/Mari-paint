@@ -17,6 +17,8 @@
 #include <mari/stroke/interpolate.hpp>
 #include <mari/stroke/smoothing.hpp>
 
+#include <optional>
+
 namespace mari::stroke {
 
 /// 파이프라인 설정. 스트로크 중간에 바꾸지 않는다.
@@ -62,6 +64,10 @@ public:
 
     /// 지금까지 찍은 스탬프 수(벤치마크·회귀 감시용).
     [[nodiscard]] usize stampCount() const noexcept { return interp_.emitted(); }
+    /// 이번 스트로크의 출처. begin() 이 성공해야 채워진다.
+    /// 🔴 읽기 전용이다 — 파이프라인에는 출처를 **바꾸는 API 가 없다**(docs/05 3.1).
+    ///    Sigan 발행기가 이 값을 그대로 StrokeSample 에 실어 프레임으로 내보낸다.
+    [[nodiscard]] const std::optional<StrokeSource>& source() const noexcept { return source_; }
     /// 마지막 샘플(스무딩까지 끝난 값). 커서 표시·Sigan 기록에 쓴다.
     [[nodiscard]] const InputSample& lastSample() const noexcept { return last_; }
     /// 핫 패스에서 삼킨 오류. 없으면 code()==ErrorCode::Unknown 이고 message 가 비어 있다.
@@ -79,6 +85,7 @@ private:
     StrokeInterpolator interp_{};
     DirtyTiles dirty_{};
     InputSample last_{};
+    std::optional<StrokeSource> source_{}; ///< 이번 스트로크의 출처. 기본값은 "없음"이다
     Error lastError_{};
     bool active_ = false;
     bool dirtyClean_ = true; ///< dirty_ 가 정렬·중복제거된 상태인가

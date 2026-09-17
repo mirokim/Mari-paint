@@ -52,6 +52,9 @@ void SiganPublisher::applyCaps(StrokeFrame& f) const noexcept {
     if (!capBrush_) {
         f.brushId = 0;
     }
+    // 🔴 origin 은 능력 협상 대상이 **아니다.** 상대가 모른다고 비우면
+    //    AI 획이 출처 없는 획이 된다 — 그게 바로 막으려던 구멍이다.
+    //    고정 길이 프레임이라 구버전 Sigan 은 꼬리 8바이트를 그냥 무시하면 된다.
 }
 
 u64 SiganPublisher::publish(const StrokeSample& s) noexcept {
@@ -73,6 +76,14 @@ u64 SiganPublisher::publish(const StrokeSample& s) noexcept {
         ++stats_.idTruncations; // 조용히 넘어가지 않는다
     }
     f.flags = s.flags;
+    // 🔴 출처는 여기서 프레임에 들어간다. 호출자가 고른 게 아니라 StrokeSource 가
+    //    들고 온 값이고, StrokeSource 는 바깥에서 origin 을 지정할 길이 없다.
+    //    프레임 안이라는 것이 핵심이다 — 서명 밖이면 사후에 고칠 수 있어 무의미하다.
+    f.origin = s.source.origin();
+    f.agentId = s.source.agentDigest();
+    if (hasFlag(f.flags, FrameFlag::Down)) {
+        stats_.origins.add(f.origin); // 획 단위 집계. 판정은 하지 않는다
+    }
 
     // 🔴 저널이 먼저다. 파이프가 어떤 상태든 정본은 남는다. 드롭은 없다(docs/03 4.2).
     journal_->appendFrame(f);

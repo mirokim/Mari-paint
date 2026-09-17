@@ -22,6 +22,11 @@ inline void putU64(u8*& p, u64 v) noexcept {
     p += 8;
 }
 
+inline void putU8(u8*& p, u8 v) noexcept {
+    p[0] = v;
+    p += 1;
+}
+
 inline void putF32(u8*& p, f32 v) noexcept { putU32(p, std::bit_cast<u32>(v)); }
 inline void putF64(u8*& p, f64 v) noexcept { putU64(p, std::bit_cast<u64>(v)); }
 
@@ -38,6 +43,12 @@ inline u64 getU64(const u8*& p) noexcept {
         v |= static_cast<u64>(p[i]) << (8 * i);
     }
     p += 8;
+    return v;
+}
+
+inline u8 getU8(const u8*& p) noexcept {
+    const u8 v = p[0];
+    p += 1;
     return v;
 }
 
@@ -75,6 +86,12 @@ void encodeFrame(const StrokeFrame& in, u8* out) noexcept {
     putU32(p, in.layerId);
     putU32(p, in.brushId);
     putU32(p, in.flags);
+    // A0 꼬리(오프셋 56~63). 출처는 여기서 와이어에 박힌다 — 서명 정본 안이다.
+    putU8(p, static_cast<u8>(in.origin));
+    putU8(p, 0); // reserved
+    putU8(p, 0);
+    putU8(p, 0);
+    putU32(p, in.agentId);
 }
 
 void decodeFrame(const u8* in, StrokeFrame& out) noexcept {
@@ -91,6 +108,11 @@ void decodeFrame(const u8* in, StrokeFrame& out) noexcept {
     out.layerId = getU32(p);
     out.brushId = getU32(p);
     out.flags = getU32(p);
+    out.origin = static_cast<StrokeOrigin>(getU8(p));
+    (void)getU8(p); // reserved 3바이트는 읽고 버린다(규칙 2: 모르는 건 무시한다)
+    (void)getU8(p);
+    (void)getU8(p);
+    out.agentId = getU32(p);
 }
 
 u32 narrowId(u64 id, bool& truncated) noexcept {

@@ -12,6 +12,7 @@
 #define MARI_BRUSH_ENGINE_HPP
 
 #include <mari/brush/preset.hpp>
+#include <mari/core/origin.hpp>
 #include <mari/core/result.hpp>
 #include <mari/core/tile.hpp>
 #include <mari/core/types.hpp>
@@ -44,7 +45,18 @@ struct StampInput {
 };
 
 /// 스트로크 하나의 고정 설정. beginStroke() 에 한 번 넘긴다.
+///
+/// 🔴 `source`(획의 출처)는 **기본값이 없다**(docs/05 3.1 · A0).
+///    기본 생성자를 지워서, 출처를 정하지 않은 스트로크는 **컴파일되지 않게** 했다.
+///    기본값을 HumanPen 으로 두면 출처를 빠뜨린 코드가 AI 획을 사람 획으로 만든다.
+///    사람 경로는 `StrokeSource::humanPen()`/`humanMouse()`, 에이전트 경로는
+///    `mari::agent::AgentStrokeGate::source()` 를 쓴다 — 후자는 origin 을 인자로 받지 않는다.
 struct StrokeContext {
+    /// 유일한 생성자. 출처 없이는 스트로크 문맥 자체가 만들어지지 않는다.
+    explicit StrokeContext(StrokeSource src) noexcept : source(src) {}
+
+    /// 획의 출처. 이 값은 Sigan 프레임을 타고 서명 정본 안으로 들어간다.
+    StrokeSource source;
     /// 그릴 대상 타일맵. 엔진은 writable() 로만 픽셀을 만진다.
     TileMap* target = nullptr;
     /// 지우개 모드. true 면 preset.blendMode 대신 Erase 로 합성한다.

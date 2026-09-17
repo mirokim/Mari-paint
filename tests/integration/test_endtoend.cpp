@@ -112,7 +112,7 @@ MARI_TEST(stroke_paints_into_real_core_tilemap) {
     CHECK(setR.ok());
 
     stroke::StrokePipeline pipe(engine.get());
-    brush::StrokeContext ctx;
+    brush::StrokeContext ctx(StrokeSource::humanPen());
     ctx.target = layer->tiles();
     ctx.color = Color8{0, 0, 0, 255};
     ctx.layerId = layer->id();
@@ -156,7 +156,7 @@ MARI_TEST(dirty_tiles_feed_compositor) {
     CHECK(engine->setPreset(roundPreset(20.0f, 0.1f)).ok());
 
     stroke::StrokePipeline pipe(engine.get());
-    brush::StrokeContext ctx;
+    brush::StrokeContext ctx(StrokeSource::humanPen());
     ctx.target = layer->tiles();
     ctx.color = Color8{255, 0, 0, 255};
     ctx.layerId = layer->id();
@@ -207,7 +207,7 @@ MARI_TEST(pipeline_samples_reach_sigan_journal) {
     CHECK(engine->setPreset(roundPreset(12.0f, 0.2f)).ok());
 
     stroke::StrokePipeline pipe(engine.get());
-    brush::StrokeContext ctx;
+    brush::StrokeContext ctx(StrokeSource::humanPen());
     ctx.target = layer->tiles();
     ctx.color = Color8{0, 0, 255, 255};
     ctx.layerId = layer->id();
@@ -227,7 +227,8 @@ MARI_TEST(pipeline_samples_reach_sigan_journal) {
             pipe.extend(events[i]);
         }
         const stroke::InputSample& s = pipe.lastSample();
-        sigan::StrokeSample fs;
+        // 🔴 파이프라인이 들고 있는 출처를 그대로 싣는다. 여기서 고르지 않는다.
+        sigan::StrokeSample fs(pipe.source().value());
         fs.pos = s.pos;
         fs.pressure = s.pressure;
         fs.tiltX = s.tiltX;
@@ -277,7 +278,7 @@ MARI_TEST(painted_document_survives_ora_roundtrip) {
     CHECK(engine->setPreset(roundPreset(24.0f, 0.15f)).ok());
 
     stroke::StrokePipeline pipe(engine.get());
-    brush::StrokeContext ctx;
+    brush::StrokeContext ctx(StrokeSource::humanPen());
     ctx.target = fg->tiles();
     ctx.color = Color8{0, 128, 255, 255};
     ctx.layerId = fg->id();

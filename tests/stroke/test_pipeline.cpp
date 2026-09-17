@@ -35,7 +35,8 @@ brush::MariBrushPreset roundPreset(f32 d, f32 spacing = 0.1f) {
 }
 
 brush::StrokeContext ctxFor(TileMap* m) {
-    brush::StrokeContext c;
+    // A0: 출처는 생성 시점에 박힌다. 나중에 바꿀 방법은 없다.
+    brush::StrokeContext c(StrokeSource::humanPen());
     c.target = m;
     c.color = Color8::rgba(20, 40, 60, 255);
     c.seed = 7;
@@ -184,7 +185,7 @@ MARI_TEST(pipeline_rejects_bad_setup_without_throwing) {
     auto e = makeNativeEngine();
     CHECK(e.value()->setPreset(roundPreset(10.0f), nullptr).ok());
     StrokePipeline pipe(e.value().get());
-    brush::StrokeContext bad;
+    brush::StrokeContext bad(StrokeSource::humanPen());
     bad.target = nullptr;
     CHECK(!pipe.begin(bad, pen(0, 0, 0)).ok());
     CHECK_EQ(pipe.lastError().code, ErrorCode::InvalidArgument);

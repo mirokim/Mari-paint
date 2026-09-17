@@ -28,7 +28,7 @@ MARI_TEST(prooflog_is_unsigned_only) {
     CHECK(pub.ok());
     auto& p = *pub.value();
 
-    StrokeSample s;
+    StrokeSample s(StrokeSource::humanPen());
     s.layerId = 2;
     s.brushId = 8;
     for (int stroke = 0; stroke < 3; ++stroke) {

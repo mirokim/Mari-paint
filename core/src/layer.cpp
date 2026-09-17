@@ -322,4 +322,22 @@ Result<void> setLayerTiles(Layer& layer, TileMapPtr tiles) {
     return Ok();
 }
 
+Result<void> reattachLayer(LayerTree& tree, const LayerPtr& layer, LayerId parent, int index) {
+    // 🔴 스냅샷 복원 전용(docs/05 2.2). 지워졌던 레이어를 **id 그대로** 되돌린다.
+    auto* impl = dynamic_cast<LayerTreeImpl*>(&tree);
+    if (impl == nullptr)
+        return Err("이 트리 구현은 재부착을 지원하지 않는다", ErrorCode::Unsupported);
+    if (!layer)
+        return Err("붙일 레이어가 null 이다", ErrorCode::InvalidArgument);
+    if (impl->find(layer->id()))
+        return Err("이미 트리에 있는 레이어다", ErrorCode::InvalidArgument);
+    auto typed = std::dynamic_pointer_cast<LayerImpl>(layer);
+    if (!typed)
+        return Err("다른 구현의 레이어는 붙일 수 없다", ErrorCode::Unsupported);
+    auto r = impl->attach(std::move(typed), parent, index);
+    if (!r.ok())
+        return r.error();
+    return Ok();
+}
+
 } // namespace mari

@@ -11,6 +11,7 @@
 #ifndef MARI_SIGAN_PUBLISHER_HPP
 #define MARI_SIGAN_PUBLISHER_HPP
 
+#include <mari/core/origin.hpp>
 #include <mari/sigan/clock.hpp>
 #include <mari/sigan/journal.hpp>
 #include <mari/sigan/sink.hpp>
@@ -20,7 +21,16 @@
 namespace mari::sigan {
 
 /// 그리기 쪽이 넘기는 한 점. seq 와 t 는 **발행기가** 채운다 — 호출자가 못 만든다.
+///
+/// 🔴 `source` 는 **기본값이 없다.** 기본 생성자를 지운 이유가 그것이다 —
+///    `StrokeSample s;` 가 컴파일되면 출처를 빠뜨린 코드가 조용히 사람 획을 만든다.
+///    출처를 고르는 세터는 없다. 만들 때 한 번 박고 끝이다(docs/05 3.1).
 struct StrokeSample {
+    /// 유일한 생성자. 출처 없이는 샘플 자체가 만들어지지 않는다.
+    explicit StrokeSample(StrokeSource src) noexcept : source(src) {}
+
+    /// 획의 출처. StrokeSource 는 origin 을 고를 수 있는 공개 API 를 주지 않는다.
+    StrokeSource source;
     PointF pos{};          ///< 캔버스 좌표
     f32 pressure = 0.0f;
     f32 tiltX = 0.0f;
@@ -47,6 +57,9 @@ struct PublisherStats {
     u64 resent = 0;      ///< 재연결 후 밀어넣은 프레임 수
     u64 reconnects = 0;  ///< 재핸드셰이크 횟수. **새 Segment 가 아니다**
     u64 idTruncations = 0; ///< u64 식별자를 u32 와이어로 좁히며 잘린 횟수(정직하게 센다)
+    /// 출처별 **획**(Down 프레임) 수. docs/05 3.2 의 비율 표시용 원자료다.
+    /// 🔴 숫자만 싣는다. 등급 판정은 Sigan 의 몫이다(docs/03 2절).
+    StrokeOriginStats origins{};
 };
 
 /// 스트로크 프레임 발행기.

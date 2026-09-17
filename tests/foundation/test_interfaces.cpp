@@ -148,7 +148,7 @@ MARI_TEST(engine_contract_is_implementable) {
     CHECK(report.hasDropped()); // 모르는 건 정직하게 남긴다
     CHECK_NEAR(eng.spacingPx(1.0f), 5.0f, 1e-4);
 
-    brush::StrokeContext ctx;
+    brush::StrokeContext ctx(StrokeSource::humanPen());
     CHECK(!eng.beginStroke(ctx).ok()); // target 없으면 실패한다
     ctx.target = &map;
     ctx.layerId = 7;

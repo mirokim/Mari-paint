@@ -19,7 +19,7 @@ std::string tmpPath(const char* stem) {
 }
 
 StrokeSample sample(f32 x, u32 flags) {
-    StrokeSample s;
+    StrokeSample s(StrokeSource::humanPen());
     s.pos = PointF{x, x * 2.0f};
     s.pressure = 0.5f;
     s.layerId = 5;

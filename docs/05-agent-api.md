@@ -217,20 +217,26 @@ Mari + Sigan은 이걸 줄 수 있는 유일한 조합이 된다.
 
 ## 4. API 표면 (초안)
 
-| 영역 | 연산 |
-|---|---|
-| 문서 | `create` `open` `save` `close` `describe` `capabilities` |
-| 스냅샷 | `snapshot` `restore` `branch` `diff` |
-| 레이어 | `list` `add` `remove` `move` `duplicate` `merge` `setProps` |
-| 그리기 | `stroke` `fill` `erase` `gradient` `transform` |
-| 선택 | `select` (사각/올가미/색상/내용), `invert` `expand` `feather` |
-| 브러시 | `list` `import`(.abr/.sut) `set` `describe` |
-| 시각 | `render` `thumbnail` `compare` |
-| 일괄 | `batch` (원자적) |
-| 이벤트 | `subscribe` `unsubscribe` |
+> 아래는 **구현된 연산 표 그대로**다(`agent::opTable()`, 37개).
+> 이 문서가 정본이 아니다 — **코드의 표가 정본이고 이 표가 그것을 따라간다.**
+> `capabilities` 연산이 런타임에 같은 것을 내보내므로, 어긋나면 코드 쪽이 맞다.
+
+| 영역 | 연산 | 비고 |
+|---|---|---|
+| 문서 | `doc.create` `doc.open` `doc.save` `doc.close` `doc.describe` `capabilities` | `doc.open`/`doc.save` 는 `.ora`(저장은 `.png` 도). `.psd` 는 없다 |
+| 스냅샷 | `snapshot` `restore` `branch` `diff` | |
+| 레이어 | `layer.list` `layer.add` `layer.remove` `layer.move` `layer.duplicate` `layer.merge` `layer.setProps` | |
+| 그리기 | `stroke` `fill` `erase` `gradient` `transform` | `transform` 은 **정수 평행이동만.** `scale`/`rotate` 는 리샘플러가 없어 거절한다 |
+| 선택 | `select` `select.expand` / ~~`select.invert`~~ ~~`select.feather`~~ | 🔴 선택 모델이 **사각형 하나뿐**이다. 반전·페더는 마스크 저장소가 없어 **미지원으로 표시**되고 MCP 도구로도 나가지 않는다 |
+| 브러시 | `brush.list` `brush.import`(.abr/.sut) `brush.set` `brush.describe` | |
+| 시각 | `render` `thumbnail` `compare` | |
+| 일괄 | `batch` (원자적) | |
+| 이벤트 | `events.subscribe` `events.unsubscribe` `events.poll` | 초안에 `poll` 이 빠져 있었다. 폴링 없이는 큐를 꺼낼 길이 없어 실제로는 필요했다 |
 
 **전부 MCP 도구로 자동 노출된다.** MCP 서버는 이 표를 읽어서 도구 목록을 생성할 뿐,
 따로 손으로 유지하지 않는다. (2.6 자기 설명과 같은 뿌리)
+단 **미지원 연산은 도구로 내보내지 않는다** — 주면 AI 가 반드시 한 번 불러 보고 실패한다.
+그래서 지금 도구는 37개가 아니라 **35개**이고, 빠진 둘의 이유는 `capabilities` 가 말해 준다.
 
 ---
 
@@ -247,31 +253,104 @@ Mari + Sigan은 이걸 줄 수 있는 유일한 조합이 된다.
 
 ## 6. 검증 (CI)
 
-| 테스트 | 통과 조건 |
-|---|---|
-| `agent_can_see` | 획 후 응답에 더티 영역 이미지가 실제로 들어있다 |
-| `snapshot_is_cheap` | 4096² 캔버스 스냅샷 100개 < 50MB, 각 < 1ms |
-| `agent_origin_forced` | 에이전트 API로 들어온 획의 origin이 **무조건** Agent |
-| `origin_in_signature` | origin을 바꾸면 서명 바이트가 바뀐다 (위조 불가 증명) |
-| `no_origin_override` | API 스키마 어디에도 origin 설정 파라미터가 없다 |
-| `headless_parity` | 헤드리스에서 GUI와 동일한 연산 집합이 노출된다 |
-| `mcp_tools_generated` | MCP 도구 목록이 API 표와 자동 일치 |
-| `batch_atomic` | 중간 실패 시 캔버스가 원상복구된다 |
+**8종 전부 실제로 존재하고 ctest 에서 돈다.** 아래 "어디서" 칸이 그 파일이다.
+
+| 테스트 | 통과 조건 | 어디서 |
+|---|---|---|
+| `agent_can_see` | 획 후 응답에 더티 영역 이미지가 실제로 들어있다 | `tests/agent/test_view.cpp` |
+| `snapshot_is_cheap` | 4096² 캔버스 스냅샷 100개 < 50MB, 각 < 1ms | `tests/agent/test_snapshot.cpp` |
+| `agent_origin_forced` | 에이전트 API로 들어온 획의 origin이 **무조건** Agent | `tests/agent/test_origin.cpp` · `test_api.cpp` |
+| `origin_in_signature` | origin을 바꾸면 **프레임 바이트**가 바뀐다 (위조 불가 증명) | `tests/sigan/test_frame.cpp` |
+| `no_origin_override` | API 스키마 어디에도 origin 설정 파라미터가 없다 | `tests/agent/test_origin.cpp` · `test_api.cpp` |
+| `headless_parity` | 헤드리스 표면들이 **같은 연산 표 하나**에서 나온다 | `tests/cli/headless_main.cpp` |
+| `mcp_tools_generated` | MCP 도구 목록이 API 표와 자동 일치 | `tests/mcp/test_mcp.cpp` |
+| `batch_atomic` | 중간 실패 시 캔버스가 원상복구된다 | `tests/agent/test_api.cpp` |
+
+### 6.1 두 항목은 문구를 낮췄다 — 원안대로는 증명할 수 없기 때문이다
+
+**`origin_in_signature`.** 원안은 "**서명** 바이트가 바뀐다"였다. 그런데 Mari 는 서명을
+하지 않는다(docs/03 2절). 그래서 실제로 재는 것은 **서명될 프레임 바이트**다 —
+origin 하나만 바꾸면 64바이트 프레임에서 **정확히 오프셋 56 한 바이트만** 달라진다.
+그 바이트가 Sigan 이 서명할 정본 안에 있으므로, 사후에 고치면 서명이 깨진다.
+Mari 가 증명할 수 있는 건 여기까지이고, 그 이상을 주장하면 경계선을 넘는 것이다.
+
+**`headless_parity`.** 원안은 "헤드리스에서 **GUI 와 동일한** 연산 집합"이었다.
+그런데 **이 리포에 GUI 가 없다.** 없는 것과 비교할 수는 없다. 그래서 대신
+**갈라질 수 없는 구조**를 검사한다 — 진짜 바이너리의 `--capabilities`,
+`DISPLAY`·`WAYLAND_DISPLAY` 를 지운 환경의 `--capabilities`, 같은 바이너리의
+MCP `tools/list`, 그리고 인프로세스 `opTable()` 이 **전부 같은 표 하나**에서 나오고,
+CLI·MCP 소스에 **두 번째 연산 표가 없다**는 것. 나중에 GUI 가 붙어도 같은 표를 읽는 한
+parity 는 유지된다. 지금 말할 수 있는 건 그것이고, "GUI 와 맞대 봤다"는 거짓말이다.
 
 ---
 
 ## 7. 마일스톤 편입
 
-| 단계 | 내용 | 시점 |
-|---|---|---|
-| **A0** | `StrokeOrigin` + 서명 포함 | **M1과 동시** — 나중에 넣으면 포맷이 굳는다 |
-| **A1** | agent-api 코어 (batch·snapshot·render) | M2 |
-| **A2** | 헤드리스 모드 + CLI | M2 |
-| **A3** | MCP 서버 어댑터 | M3 |
-| **A4** | 시맨틱 주소 + `describe` | M4 |
-| **A5** | JSON-RPC 원격 | M5 |
+| 단계 | 내용 | 시점 | 현황 (2026-09-17, Linux) |
+|---|---|---|---|
+| **A0** | `StrokeOrigin` + 서명 포함 | **M1과 동시** — 나중에 넣으면 포맷이 굳는다 | ✅ `include/mari/core/origin.hpp` · 프레임 오프셋 56 |
+| **A1** | agent-api 코어 (batch·snapshot·render) | M2 | ✅ `agent/` 10개 소스 · 연산 37개 |
+| **A2** | 헤드리스 모드 + CLI | M2 | ✅ `mari-paint` 실행파일이 Linux 에서 실제로 돈다 |
+| **A3** | MCP 서버 어댑터 | M3 | ✅ `--mcp --stdio` · 도구 35개가 표에서 생성된다 |
+| **A4** | 시맨틱 주소 + `describe` | M4 | ✅ 이름·역할 태그·`content:nonEmpty` · `doc.describe` |
+| **A5** | JSON-RPC 원격 | M5 | ⚠️ `--serve` 로 **TCP 루프백 한 줄 왕복**까지. 인증도, 동시 세션도, WebSocket 도 없다 |
 
 **A0를 M1에 못 박는 이유:** origin이 서명 정본에 들어가야 하는데,
 Sigan의 서명 포맷은 한 번 배포되면 **하위 호환 때문에 못 바꾼다.**
 docs/03 8절이 경고한 그대로 — `:src`를 넣을 수 있었던 건 "아직 릴리스 전이라
 프로덕션 실측 0건"이었기 때문이다. **지금이 그 창문이다.**
+
+---
+
+## 8. 🔴 구현이 설계에 못 미치는 곳 (2026-09-17 · Linux)
+
+> 이 절이 없으면 이 문서는 "하려는 것"과 "된 것"을 섞어 버린다.
+> 아래는 **설계에 적혀 있는데 아직 코드로 이어지지 않은 것**이다.
+
+### 8.1 에이전트 획은 **아직 Sigan 으로 흘러가지 않는다**
+
+2.3 의 셋째 이유는 이렇게 적혀 있다:
+
+> 3. **Sigan이 AI 획도 똑같이 기록한다** → 3절로 이어진다.
+
+**지금은 아니다.** 확인 방법은 간단하다 —
+`grep -rn "Publisher\|publish(" --include=*.cpp .` 를 돌리면
+`sigan/` 과 `tests/` 밖에 호출자가 **한 곳도 없다.**
+`agent/` `app/` `cli/` `mcp/` 의 CMakeLists 어디도 `mari::sigan` 을 링크하지 않는다.
+
+즉 지금 서 있는 것은 두 조각이고, 둘을 잇는 한 겹이 비어 있다:
+
+| 있는 것 | 증명 |
+|---|---|
+| origin 을 **위조할 수 없다** | `no_origin_override` · `agent_origin_forced` — 게이트 밖에 `StrokeOrigin::Agent` 를 만들 길이 없다 |
+| origin 이 **프레임 바이트 안에 있다** | `origin_in_signature` — 오프셋 56 |
+| 발행기가 **유실 없이 기록한다** | `no_frame_drop` · `published == sent + spooled` |
+| **없는 것** | 에이전트가 그린 획을 `SiganPublisher` 로 넘기는 배선 |
+
+그래서 3.2 의 "이 작품: 사람 획 1,847 / AI 획 213" 은 **아직 인증서에 못 찍힌다.**
+지금 나오는 것은 세션 안의 집계(`StrokeOriginStats`)뿐이고,
+CLI 가 실행 끝에 그 숫자를 stdout 으로 돌려준다(`run_ops_always_reports_stroke_origins`).
+그건 세션 로컬 숫자이지 서명될 기록이 아니다.
+
+또 하나: `fill` · `erase` · `gradient` 는 `countStroke()` 로 **집계에는 잡히지만**
+스트로크 프레임을 만들지 않는다(타일에 직접 쓴다). 배선을 넣을 때
+"획 하나 = 프레임 하나"를 어떻게 맞출지 정해야 한다. 지금 정하지 않은 상태다.
+
+### 8.2 2.7 스트리밍은 **폴링이다**
+
+설계는 "흘려보낸다"고 썼지만 구현은 `events.subscribe` → `events.poll` 로 큐를 꺼내는
+**요청/응답**이다. 서버가 먼저 밀어 주는 경로는 없다. `--serve` 도 한 줄 요청에 한 줄
+응답이라 푸시가 들어갈 자리가 아직 없다.
+
+### 8.3 2.4 시맨틱 주소 중 **선택(selection)** 은 사각형 하나뿐이다
+
+`{ "region": { "selection": "current" } }` 는 동작하지만, 그 "current" 가 담을 수 있는
+것은 사각형 하나다. 올가미·색상 선택·반전·페더는 **마스크 저장소가 없어서** 못 한다.
+`select.invert` 와 `select.feather` 가 미지원으로 표시된 이유가 이것이다(4절).
+
+### 8.4 1절 그림의 **COM · UI** 칸은 비어 있다
+
+`COM (Sigan)` 과 `UI (사람)` 두 칸은 Linux 에서 **컴파일조차 되지 않는다.**
+`mari::app` 이 플랫폼 중립 브리지 구현체로 서 있어서 COM 래퍼가 물릴 자리는 생겼지만,
+그 어댑터 한 겹은 아직 없다(docs/04 2절). 그래서 "사람 UI 도 같은 계층을 쓴다"는
+**설계 의도이고, 아직 검증된 사실이 아니다.**

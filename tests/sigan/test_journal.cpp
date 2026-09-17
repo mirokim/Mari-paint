@@ -112,7 +112,10 @@ MARI_TEST(journal_detects_bit_rot_and_stops) {
     {
         std::FILE* fp = std::fopen(path.c_str(), "r+b");
         CHECK(fp != nullptr);
-        const long off = static_cast<long>(kJournalHeaderSize) + 2 * 65 + 10;
+        // 레코드 하나 = tag(1) + len(4) + 프레임 페이로드 + crc(4).
+        // A0 에서 프레임이 56 → 64B 로 늘었으므로 상수를 박지 않고 kFrameSize 로 센다.
+        const long recordSize = static_cast<long>(kFrameSize) + 9;
+        const long off = static_cast<long>(kJournalHeaderSize) + 2 * recordSize + 10;
         std::fseek(fp, off, SEEK_SET);
         int c = std::fgetc(fp);
         std::fseek(fp, off, SEEK_SET);

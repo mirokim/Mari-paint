@@ -52,7 +52,7 @@ brush::MariBrushPreset benchPreset() {
 }
 
 brush::StrokeContext ctxFor(TileMap* m) {
-    brush::StrokeContext c;
+    brush::StrokeContext c(StrokeSource::humanPen());
     c.target = m;
     c.color = Color8::rgba(10, 20, 30, 255);
     c.seed = 2026;

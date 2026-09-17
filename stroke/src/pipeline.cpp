@@ -46,6 +46,7 @@ Result<void> StrokePipeline::begin(const brush::StrokeContext& ctx, const RawInp
     const InputSample s = smoother_.reset(norm_.begin(e));
     interp_.begin(s, *engine_, sink);
     last_ = s;
+    source_ = ctx.source; // 출처는 문맥에서 그대로 들고 온다. 여기서 고르지 않는다
     active_ = true;
     dirtyClean_ = dirty_.empty();
     return Ok();

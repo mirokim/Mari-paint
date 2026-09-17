@@ -37,10 +37,20 @@ if(MARI_BUILD_TESTS)
 endif()
 
 add_subdirectory(core)
+add_subdirectory(crypto)
 add_subdirectory(stroke)
 add_subdirectory(io/ora)
 add_subdirectory(io/brush)
 add_subdirectory(sigan)
+# app — 플랫폼 중립 브리지 구현체. COM 레이어가 보는 인터페이스를 실제 타입에 물린다.
+add_subdirectory(app)
+# agent — 🔴 에이전트 능력 계층(docs/05). MCP·CLI·COM 은 이 위에 씌우는 얇은 어댑터다.
+add_subdirectory(agent)
+# mcp — MCP 서버 어댑터(docs/05 4절 · A3). agent-api 위에 씌우는 **얇은** 전송 계층이고
+#       도구 목록은 agent 의 연산 표에서 생성된다. cli 보다 먼저여야 한다(cli 가 링크한다).
+add_subdirectory(mcp)
+# cli — 헤드리스 모드 + mari-paint 실행파일(docs/05 2.8). Qt 없이 빌드된다.
+add_subdirectory(cli)
 
 # Windows 전용 레이어. 각 파일 안에도 WIN32 가드가 있지만 여기서도 명시적으로 막는다.
 # platform/win 이 hosts 보다 먼저여야 한다(hosts/CMakeLists.txt 가 FATAL_ERROR 로 막는다).

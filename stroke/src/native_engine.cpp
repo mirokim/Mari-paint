@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <vector>
 
 namespace mari::stroke {
@@ -237,7 +238,7 @@ public:
                 if (maxCov * alpha < kInkEpsilon)
                     continue; // 이 타일에는 아무것도 안 닿는다 — 만들지도 않는다
 
-                auto wt = ctx_.target->writable(tc);
+                auto wt = ctx_->target->writable(tc);
                 if (!wt.ok())
                     continue; // 핫 패스에서는 던지지 않는다. 이 타일만 포기한다
                 Tile* tile = wt.value().get();
@@ -253,7 +254,7 @@ public:
     void endStroke(DirtyTiles&) noexcept override {
         active_ = false;
         hasLast_ = false;
-        ctx_.target = nullptr;
+        ctx_.reset();
     }
 
     [[nodiscard]] f32 spacingPx(f32 pressure) const noexcept override {
@@ -380,11 +381,11 @@ private:
         if (base == nullptr)
             return;
         const usize stride = tile.stride();
-        const BlendMode mode = ctx_.eraser ? BlendMode::Erase : preset_.blendMode;
-        const f32 sr = static_cast<f32>(ctx_.color.r) * (1.0f / 255.0f);
-        const f32 sg = static_cast<f32>(ctx_.color.g) * (1.0f / 255.0f);
-        const f32 sb = static_cast<f32>(ctx_.color.b) * (1.0f / 255.0f);
-        const f32 srcA = static_cast<f32>(ctx_.color.a) * (1.0f / 255.0f);
+        const BlendMode mode = ctx_->eraser ? BlendMode::Erase : preset_.blendMode;
+        const f32 sr = static_cast<f32>(ctx_->color.r) * (1.0f / 255.0f);
+        const f32 sg = static_cast<f32>(ctx_->color.g) * (1.0f / 255.0f);
+        const f32 sb = static_cast<f32>(ctx_->color.b) * (1.0f / 255.0f);
+        const f32 srcA = static_cast<f32>(ctx_->color.a) * (1.0f / 255.0f);
 
         for (i32 y = 0; y < h; ++y) {
             const f32* row = cov_.data() + static_cast<usize>(y) * static_cast<usize>(w);
@@ -401,7 +402,7 @@ private:
                     dst[3] = toByte(na);
                     continue;
                 }
-                if (ctx_.alphaLocked && da <= 0.0f)
+                if (ctx_->alphaLocked && da <= 0.0f)
                     continue; // 알파 잠금 — 투명한 곳은 건드리지 않는다
 
                 const f32 dr = static_cast<f32>(dst[0]) * (1.0f / 255.0f);
@@ -429,7 +430,7 @@ private:
                     break; // Normal
                 }
 
-                if (ctx_.alphaLocked) {
+                if (ctx_->alphaLocked) {
                     // 알파는 그대로, 색만 섞는다.
                     dst[0] = toByte(dr + (cr - dr) * sa);
                     dst[1] = toByte(dg + (cg - dg) * sa);
@@ -455,7 +456,10 @@ private:
 
     MariBrushPreset preset_{};
     std::vector<DynamicLink> links_[kDynamicOutputCount];
-    StrokeContext ctx_{};
+    /// 🔴 optional 인 이유: StrokeContext 는 출처(StrokeSource)가 없으면 만들 수 없다.
+    ///    "일단 사람 획으로 만들어 두고 나중에 덮어쓴다"는 자리표시자를 두지 않으려는
+    ///    것이다 — 그 자리표시자가 새면 AI 획이 사람 획이 된다(docs/05 3.1).
+    std::optional<StrokeContext> ctx_;
     Rng rng_{};
     std::vector<f32> cov_;
     PointF lastPos_{};

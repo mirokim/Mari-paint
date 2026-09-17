@@ -45,7 +45,8 @@ StampInput at(f32 x, f32 y, f32 pressure = 1.0f) {
 }
 
 StrokeContext ctxFor(TileMap* map) {
-    StrokeContext c;
+    // A0: 출처 없는 스트로크는 컴파일되지 않는다. 테스트도 사람 펜임을 명시한다.
+    StrokeContext c(StrokeSource::humanPen());
     c.target = map;
     c.color = Color8::rgba(0, 0, 0, 255);
     c.seed = 12345;

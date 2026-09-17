@@ -47,6 +47,9 @@ std::vector<ProofStrokeSummary> summarizeStrokes(const JournalScan& scan) {
             cur.layerId = f.layerId;
             cur.brushId = f.brushId;
             cur.eraser = hasFlag(f.flags, FrameFlag::Eraser);
+            // 출처는 획 시작 프레임의 것을 쓴다. 한 획 안에서 바뀔 수 있는 값이 아니다.
+            cur.origin = f.origin;
+            cur.agentId = f.agentId;
             open = true;
         }
         cur.seqLast = f.seq;
@@ -61,6 +64,14 @@ std::vector<ProofStrokeSummary> summarizeStrokes(const JournalScan& scan) {
         out.push_back(cur);
     }
     return out;
+}
+
+StrokeOriginStats originStats(const std::vector<ProofStrokeSummary>& strokes) {
+    StrokeOriginStats st;
+    for (const auto& s : strokes) {
+        st.add(s.origin); // 모르는 값도 버리지 않는다 — "미지정" 칸으로 간다
+    }
+    return st;
 }
 
 Result<std::string> buildProofLog(const ProofLogInput& in) {
@@ -95,6 +106,36 @@ Result<std::string> buildProofLog(const ProofLogInput& in) {
     out += ",\n  \"lostFrames\": " + std::to_string(gaps.size());
     out += ",\n  \"journalTruncated\": ";
     out += scan.truncated ? "true" : "false";
+
+    // ── 출처별 집계 (docs/05 3.2) ──────────────────────────────────────
+    // 🔴 숫자만 싣는다. "human-only" · "ai-assisted" 같은 판정 문자열은 없다.
+    //    의뢰인이 원하는 건 "AI 안 씀"이 아니라 "거짓말 안 함"이다. 사실만 적는다.
+    const StrokeOriginStats origins = originStats(strokes);
+    out += ",\n  \"originCounts\": {";
+    const StrokeOrigin kAll[] = {StrokeOrigin::HumanPen, StrokeOrigin::HumanMouse,
+                                 StrokeOrigin::Agent, StrokeOrigin::Imported,
+                                 StrokeOrigin::Filter};
+    for (usize i = 0; i < sizeof(kAll) / sizeof(kAll[0]); ++i) {
+        out += i == 0 ? "\"" : ", \"";
+        out += strokeOriginName(kAll[i]);
+        out += "\": " + std::to_string(origins.count(kAll[i]));
+    }
+    // 출처가 기록되지 않은 획. **0 이어야 정상이다.** 0 이 아니면 숨기지 않고 드러낸다.
+    out += ", \"unspecified\": " + std::to_string(origins.unspecified());
+    out += "}";
+    out += ",\n  \"humanStrokes\": " + std::to_string(origins.human());
+    out += ",\n  \"agentStrokes\": " + std::to_string(origins.agent());
+    out += ",\n  \"agentStrokeRatio\": " + num3(origins.agentRatio());
+    // 붓을 쥔 에이전트 목록. 와이어에는 다이제스트만 실리므로 이름을 여기서 붙여 준다.
+    out += ",\n  \"agents\": [";
+    for (usize i = 0; i < in.agents.size(); ++i) {
+        out += i == 0 ? "{\"digest\": " : ", {\"digest\": ";
+        out += std::to_string(in.agents[i].digest());
+        out += ", \"id\": ";
+        appendEscaped(out, std::string(in.agents[i].view()));
+        out += "}";
+    }
+    out += "]";
     out += ",\n  \"strokes\": [";
     for (usize i = 0; i < strokes.size(); ++i) {
         const auto& s = strokes[i];
@@ -108,6 +149,11 @@ Result<std::string> buildProofLog(const ProofLogInput& in) {
         out += ", \"points\": " + std::to_string(s.pointCount);
         out += ", \"eraser\": ";
         out += s.eraser ? "true" : "false";
+        // 🔴 획마다 출처가 붙는다. 이 값은 저널(=서명 정본이 될 프레임)에서 왔다.
+        out += ", \"origin\": \"";
+        out += strokeOriginName(s.origin);
+        out += "\"";
+        out += ", \"agentId\": " + std::to_string(s.agentId);
         out += "}";
     }
     out += strokes.empty() ? "]" : "\n  ]";
