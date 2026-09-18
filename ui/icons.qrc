@@ -1,6 +1,7 @@
 <RCC>
   <qresource prefix="/icons">
     <file alias="arrow-back-up.svg">icons/arrow-back-up.svg</file>
+    <file alias="arrow-bar-to-down.svg">icons/arrow-bar-to-down.svg</file>
     <file alias="arrow-down.svg">icons/arrow-down.svg</file>
     <file alias="arrow-forward-up.svg">icons/arrow-forward-up.svg</file>
     <file alias="arrow-merge.svg">icons/arrow-merge.svg</file>

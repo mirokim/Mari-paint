@@ -225,4 +225,62 @@ MARI_TEST(composite_rejects_bad_arguments) {
     CHECK(compositeArea(*tree, Rect{}, px.data(), 256).ok());             // 빈 영역은 무해
 }
 
+
+// ── 클리핑(아래 레이어에 클립) ─────────────────────────────────────────────
+
+/// 타일의 왼쪽 절반만 채운다 — 기준 알파가 부분적일 때 클립이 잘리는지 보려고.
+void fillHalfTile(Layer& layer, TileCoord c, Color8 col) {
+    auto w = layer.tiles()->writable(c);
+    if (!w.ok())
+        return;
+    TilePtr t = std::move(w).value();
+    u8* p = t->mutablePixels();
+    for (i32 y = 0; y < kTileSize; ++y)
+        for (i32 x = 0; x < kTileSize / 2; ++x) {
+            u8* q = p + static_cast<usize>(y) * t->stride() + static_cast<usize>(x) * 4u;
+            q[0] = col.r; q[1] = col.g; q[2] = col.b; q[3] = col.a;
+        }
+}
+
+MARI_TEST(clip_to_below_is_limited_to_base_alpha) {
+    auto tree = makeLayerTree(Size{64, 64}).value();
+    auto base = tree->addRaster("base").value();
+    auto clip = tree->addRaster("clip").value();
+    fillHalfTile(*base, TileCoord{0, 0}, Color8::rgba(0, 0, 255, 255)); // 왼쪽 절반 파랑
+    fillTile(*clip, TileCoord{0, 0}, Color8::rgba(255, 0, 0, 255));     // 전체 빨강
+    clip->setClipToBelow(true);
+
+    Buffer buf(Rect{0, 0, 64, 64});
+    CHECK(compositeArea(*tree, buf.area, buf.data(), buf.stride()).ok());
+    // 기준이 있는 왼쪽: 빨강이 덮는다. 기준이 없는 오른쪽: 아무것도 없다.
+    CHECK_EQ(buf.at(10, 10), Color8::rgba(255, 0, 0, 255));
+    CHECK_EQ(buf.at(50, 10).a, static_cast<u8>(0));
+}
+
+MARI_TEST(clip_stack_inherits_base_opacity_and_ignores_orphan_clip) {
+    auto tree = makeLayerTree(Size{64, 64}).value();
+    auto base = tree->addRaster("base").value();
+    auto clipA = tree->addRaster("a").value();
+    auto clipB = tree->addRaster("b").value();
+    fillTile(*base, TileCoord{0, 0}, Color8::rgba(0, 255, 0, 255));
+    fillTile(*clipA, TileCoord{0, 0}, Color8::rgba(255, 0, 0, 255));
+    fillTile(*clipB, TileCoord{0, 0}, Color8::rgba(0, 0, 255, 255));
+    clipA->setClipToBelow(true);
+    clipB->setClipToBelow(true);
+    base->setOpacity(0.5f);
+
+    Buffer buf(Rect{0, 0, 64, 64});
+    CHECK(compositeArea(*tree, buf.area, buf.data(), buf.stride()).ok());
+    // 묶음 결과(파랑, 맨 위 클립)가 기준 불투명도 0.5 로 올라간다 → 알파 ≈ 128.
+    const Color8 c = buf.at(5, 5);
+    CHECK(c.a >= 126 && c.a <= 129);
+    CHECK(c.b > c.r && c.b > c.g);
+
+    // 기준을 숨기면 클립 묶음 전체가 사라진다(고아 클립은 그리지 않는다).
+    base->setVisible(false);
+    Buffer buf2(Rect{0, 0, 64, 64});
+    CHECK(compositeArea(*tree, buf2.area, buf2.data(), buf2.stride()).ok());
+    CHECK_EQ(buf2.at(5, 5).a, static_cast<u8>(0));
+}
+
 MARI_TEST_MAIN()

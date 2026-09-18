@@ -85,6 +85,9 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
     lock_->setCheckable(true);
     alphaLock_ = iconButton(this, "square-half", "알파 잠금 — 이미 칠한 자리에만 칠해진다");
     alphaLock_->setCheckable(true);
+    clip_ = iconButton(this, "arrow-bar-to-down", "아래 레이어에서 클리핑 — 아래 레이어가 칠해진 곳에만 보인다");
+    clip_->setCheckable(true);
+    top->addWidget(clip_);
     top->addWidget(lock_);
     top->addWidget(alphaLock_);
     layout->addLayout(top);
@@ -131,6 +134,10 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
         lock->setCheckable(true);
         lock->setChecked(l->locked());
         connect(lock, &QAction::toggled, this, [this, l](bool on) { l->setLocked(on); refresh(); });
+        QAction* clipAct = menu.addAction(themedIcon("arrow-bar-to-down", 16), "아래 레이어에서 클리핑");
+        clipAct->setCheckable(true);
+        clipAct->setChecked(l->clipToBelow());
+        connect(clipAct, &QAction::toggled, this, [this, l](bool on) { l->setClipToBelow(on); refresh(); markDirty(); });
         QAction* alpha = menu.addAction(themedIcon("square-half", 16), "알파 잠금");
         alpha->setCheckable(true);
         alpha->setChecked(l->alphaLocked());
@@ -210,6 +217,18 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
             }
         }
     });
+    connect(clip_, &QToolButton::toggled, this, [this](bool on) {
+        if (busy_) return;
+        if (const LayerPtr l = activeLayer()) {
+            l->setClipToBelow(on);
+            if (QListWidgetItem* item = list_->currentItem()) {
+                busy_ = true;
+                item->setData(kClipRole, on);
+                busy_ = false;
+            }
+            markDirty();
+        }
+    });
     connect(alphaLock_, &QToolButton::toggled, this, [this](bool on) {
         if (busy_) return;
         if (const LayerPtr l = activeLayer()) {
@@ -271,6 +290,7 @@ void LayerPanel::fillItem(QListWidgetItem& item, const Layer& l) const {
     item.setData(kVisibleRole, l.visible());
     item.setData(kLockedRole, l.locked());
     item.setData(kAlphaRole, l.alphaLocked());
+    item.setData(kClipRole, l.clipToBelow());
 }
 
 void LayerPanel::refresh() {
@@ -321,7 +341,9 @@ void LayerPanel::syncControlsToActive() {
     opacitySpin_->setEnabled(has);
     lock_->setEnabled(has);
     alphaLock_->setEnabled(has);
+    clip_->setEnabled(has);
     if (has) {
+        clip_->setChecked(l->clipToBelow());
         const int idx = blend_->findData(static_cast<int>(l->blendMode()));
         blend_->setCurrentIndex(idx < 0 ? 0 : idx);
         const int op = static_cast<int>(l->opacity() * 100.0f + 0.5f);

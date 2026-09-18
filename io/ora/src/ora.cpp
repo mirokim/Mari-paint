@@ -87,6 +87,8 @@ struct Writer {
             xml += " mari:locked=\"true\"";
         if (layer.alphaLocked())
             xml += " mari:alpha-locked=\"true\"";
+        if (layer.clipToBelow())
+            xml += " mari:clip-to-below=\"true\"";
         if (layer.id() == active)
             xml += " selected=\"true\"";
     }
@@ -191,6 +193,7 @@ struct Reader {
         layer.setVisible(node.attrOr("visibility", "visible") != "hidden");
         layer.setLocked(parseBool(node.attr("mari:locked"), false));
         layer.setAlphaLocked(parseBool(node.attr("mari:alpha-locked"), false));
+        layer.setClipToBelow(parseBool(node.attr("mari:clip-to-below"), false));
 
         const std::string op = node.attrOr("composite-op", "svg:src-over");
         const std::optional<BlendMode> mode = blendModeFromCompositeOp(op);

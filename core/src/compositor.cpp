@@ -22,7 +22,9 @@ Result<void> compositeList(const std::vector<LayerPtr>& layers, const Rect& area
                            usize stride);
 
 /// 래스터 레이어 한 장을 dst 위에 올린다. 할당된 타일만 훑는다.
-Result<void> compositeRaster(const Layer& layer, const Rect& area, u8* dst, usize stride) {
+/// extraMask 는 area 크기의 Gray8 버퍼(클리핑 기준 알파). nullptr 이면 없음.
+Result<void> compositeRaster(const Layer& layer, const Rect& area, u8* dst, usize stride,
+                             const u8* extraMask = nullptr, usize extraStride = 0) {
     const TileMap* tm = layer.tiles();
     if (tm == nullptr)
         return Ok();
@@ -71,6 +73,19 @@ Result<void> compositeRaster(const Layer& layer, const Rect& area, u8* dst, usiz
                 if (maskTile)
                     mrow = maskTile->pixels() + static_cast<usize>(y - oy) * maskTile->stride() +
                            static_cast<usize>(r.x - ox);
+                if (extraMask != nullptr) {
+                    const u8* erow = extraMask + static_cast<usize>(y - area.y) * extraStride +
+                                     static_cast<usize>(r.x - area.x);
+                    if (mrow == nullptr) {
+                        mrow = erow;
+                    } else {
+                        // 레이어 마스크 × 클리핑 알파. 한 줄짜리 작업 버퍼(타일 폭 이하).
+                        u8 combined[kTileSize];
+                        for (i32 i = 0; i < r.width; ++i)
+                            combined[i] = static_cast<u8>((static_cast<u32>(mrow[i]) * erow[i] + 127u) / 255u);
+                        mrow = combined;
+                    }
+                }
                 blendRowRgba8(mode, drow, srow, r.width, opacity, mrow);
             }
         }
@@ -87,12 +102,93 @@ void compositeBuffer(BlendMode mode, f32 opacity, const Rect& area, u8* dst, usi
     }
 }
 
+/// 레이어 하나(그룹 포함)를 **격리 버퍼**에 불투명도 1·Normal 로 그린다. 클리핑 묶음의 기준용.
+Result<void> compositeIsolated(const Layer& layer, const Rect& area, u8* tmp, usize tmpStride) {
+    if (layer.kind() == LayerKind::Group) {
+        return compositeList(layer.children(), area, tmp, tmpStride);
+    }
+    // 기준 레이어의 마스크는 존중하되 불투명도·블렌드는 묶음 전체에 나중에 적용한다.
+    struct Plain final : Layer {
+        const Layer& l;
+        explicit Plain(const Layer& x) : l(x) {}
+        LayerId id() const override { return l.id(); }
+        LayerKind kind() const override { return l.kind(); }
+        const std::string& name() const override { return l.name(); }
+        void setName(std::string) override {}
+        f32 opacity() const override { return 1.0f; }
+        void setOpacity(f32) override {}
+        BlendMode blendMode() const override { return BlendMode::Normal; }
+        void setBlendMode(BlendMode) override {}
+        bool visible() const override { return true; }
+        void setVisible(bool) override {}
+        bool locked() const override { return l.locked(); }
+        void setLocked(bool) override {}
+        bool alphaLocked() const override { return l.alphaLocked(); }
+        void setAlphaLocked(bool) override {}
+        bool clipToBelow() const override { return false; }
+        void setClipToBelow(bool) override {}
+        TileMap* tiles() override { return nullptr; }
+        const TileMap* tiles() const override { return l.tiles(); }
+        const TileMap* mask() const override { return l.mask(); }
+        void setMask(TileMapPtr) override {}
+        Rect bounds() const override { return l.bounds(); }
+        const std::vector<LayerPtr>& children() const override { return l.children(); }
+    };
+    return compositeRaster(Plain(layer), area, tmp, tmpStride);
+}
+
 Result<void> compositeList(const std::vector<LayerPtr>& layers, const Rect& area, u8* dst,
                            usize stride) {
     // 인덱스 0 = 가장 아래. 아래에서 위로 올라간다.
-    for (const LayerPtr& layer : layers) {
+    for (usize idx = 0; idx < layers.size(); ++idx) {
+        const LayerPtr& layer = layers[idx];
         if (!layer || !layer->visible() || layer->opacity() <= 0.0f)
             continue;
+        if (layer->clipToBelow())
+            continue; // 기준 레이어가 처리한다(기준이 없거나 숨겨졌으면 안 보이는 게 맞다)
+
+        // 🔴 클리핑 묶음: 이 레이어 위에 연속된 clipToBelow 레이어가 있으면
+        //    ① 기준을 격리 버퍼에 그리고 ② 그 알파를 마스크로 클립 레이어들을 격리 버퍼에 올린 뒤
+        //    ③ 버퍼 전체를 기준의 불투명도·블렌드로 dst 에 올린다(CSP 규약).
+        usize clipEnd = idx + 1;
+        while (clipEnd < layers.size() && layers[clipEnd] && layers[clipEnd]->clipToBelow())
+            ++clipEnd;
+        if (clipEnd > idx + 1) {
+            const usize tmpStride = static_cast<usize>(area.width) * kRgbaBpp;
+            std::vector<u8> tmp(tmpStride * static_cast<usize>(area.height), u8{0});
+            auto r = compositeIsolated(*layer, area, tmp.data(), tmpStride);
+            if (!r.ok())
+                return r;
+            // 기준 알파 → Gray8 마스크
+            std::vector<u8> alpha(static_cast<usize>(area.width) * static_cast<usize>(area.height));
+            for (i32 y = 0; y < area.height; ++y)
+                for (i32 x = 0; x < area.width; ++x)
+                    alpha[static_cast<usize>(y) * static_cast<usize>(area.width) + static_cast<usize>(x)] =
+                        tmp[static_cast<usize>(y) * tmpStride + static_cast<usize>(x) * kRgbaBpp + 3];
+            for (usize k = idx + 1; k < clipEnd; ++k) {
+                const LayerPtr& c = layers[k];
+                if (!c->visible() || c->opacity() <= 0.0f)
+                    continue;
+                if (c->kind() == LayerKind::Group) {
+                    std::vector<u8> g(tmpStride * static_cast<usize>(area.height), u8{0});
+                    auto gr = compositeList(c->children(), area, g.data(), tmpStride);
+                    if (!gr.ok())
+                        return gr;
+                    for (i32 y = 0; y < area.height; ++y)
+                        blendRowRgba8(c->blendMode(), tmp.data() + static_cast<usize>(y) * tmpStride,
+                                      g.data() + static_cast<usize>(y) * tmpStride, area.width, c->opacity(),
+                                      alpha.data() + static_cast<usize>(y) * static_cast<usize>(area.width));
+                } else {
+                    auto cr = compositeRaster(*c, area, tmp.data(), tmpStride, alpha.data(),
+                                              static_cast<usize>(area.width));
+                    if (!cr.ok())
+                        return cr;
+                }
+            }
+            compositeBuffer(layer->blendMode(), layer->opacity(), area, dst, stride, tmp.data(), tmpStride);
+            idx = clipEnd - 1;
+            continue;
+        }
 
         if (layer->kind() == LayerKind::Group) {
             if (layer->children().empty())

@@ -58,6 +58,7 @@ private:
     QSpinBox* opacitySpin_ = nullptr;
     QToolButton* lock_ = nullptr;
     QToolButton* alphaLock_ = nullptr;
+    QToolButton* clip_ = nullptr;
     QListWidget* list_ = nullptr;
     bool busy_ = false;
 };

@@ -51,6 +51,12 @@ public:
     [[nodiscard]] virtual bool alphaLocked() const = 0;
     virtual void setAlphaLocked(bool v) = 0;
 
+    /// 클리핑 — 바로 아래 형제(클립되지 않은 첫 레이어)의 알파 안에서만 보인다(CSP 의 "아래 레이어에서
+    /// 클리핑"). 연속된 클립 레이어들은 한 기준 레이어를 공유하고, 기준 레이어의 불투명도·블렌드가 묶음
+    /// 전체에 적용된다. 합성기(core/src/compositor.cpp)가 이 규약을 구현한다.
+    [[nodiscard]] virtual bool clipToBelow() const = 0;
+    virtual void setClipToBelow(bool v) = 0;
+
     /// 픽셀 저장소. 그룹 레이어는 nullptr 다.
     [[nodiscard]] virtual TileMap* tiles() = 0;
     [[nodiscard]] virtual const TileMap* tiles() const = 0;

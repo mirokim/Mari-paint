@@ -39,6 +39,7 @@ void collectNodes(const std::vector<LayerPtr>& list, LayerId parent,
         n.visible = l->visible();
         n.locked = l->locked();
         n.alphaLocked = l->alphaLocked();
+        n.clipToBelow = l->clipToBelow();
         n.layer = l;
         if (const TileMap* tiles = l->tiles(); tiles != nullptr) {
             // 🔴 여기가 O(1) 의 전부다. 타일 포인터만 공유한다.
@@ -69,7 +70,7 @@ void allTiles(const TileMap& map, DirtyTiles& out) {
 bool sameProps(const SnapshotNode& a, const SnapshotNode& b) {
     return a.parent == b.parent && a.index == b.index && a.name == b.name &&
            a.opacity == b.opacity && a.blend == b.blend && a.visible == b.visible &&
-           a.locked == b.locked && a.alphaLocked == b.alphaLocked;
+           a.locked == b.locked && a.alphaLocked == b.alphaLocked && a.clipToBelow == b.clipToBelow;
 }
 
 } // namespace
@@ -155,6 +156,7 @@ Result<void> restoreSnapshot(LayerTree& tree, const DocSnapshot& snap,
         live->setVisible(n.visible);
         live->setLocked(n.locked);
         live->setAlphaLocked(n.alphaLocked);
+        live->setClipToBelow(n.clipToBelow);
 
         if (n.tiles && live->tiles() != nullptr) {
             // 스냅샷이 들고 있는 맵을 **그대로 꽂지 않는다.** 또 한 겹 snapshot() 을 떠서

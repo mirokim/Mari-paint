@@ -40,6 +40,9 @@ public:
     bool alphaLocked() const override { return alphaLocked_; }
     void setAlphaLocked(bool v) override { alphaLocked_ = v; }
 
+    bool clipToBelow() const override { return clip_; }
+    void setClipToBelow(bool v) override { clip_ = v; }
+
     TileMap* tiles() override { return tiles_.get(); }
     const TileMap* tiles() const override { return tiles_.get(); }
 
@@ -70,6 +73,7 @@ public:
         visible_ = o.visible_;
         locked_ = o.locked_;
         alphaLocked_ = o.alphaLocked_;
+        clip_ = o.clip_;
     }
 
 private:
@@ -81,6 +85,7 @@ private:
     bool visible_ = true;
     bool locked_ = false;
     bool alphaLocked_ = false;
+    bool clip_ = false;
     TileMapPtr tiles_;
     TileMapPtr mask_;
     std::vector<LayerPtr> children_;

@@ -22,7 +22,8 @@ LayerRowDelegate::LayerRowDelegate(QObject* parent)
       eye_(themedIcon("eye", kEye)),
       eyeOff_(themedIcon("eye-off", kEye)),
       lock_(themedIcon("lock", kMark)),
-      alpha_(themedIcon("square-half", kMark)) {}
+      alpha_(themedIcon("square-half", kMark)),
+      clip_(themedIcon("arrow-bar-to-down", kMark)) {}
 
 QRect LayerRowDelegate::eyeRect(const QRect& r) {
     return QRect(r.left() + 6, r.center().y() - kEye / 2, kEye, kEye);
@@ -46,7 +47,13 @@ void LayerRowDelegate::paint(QPainter* p, const QStyleOptionViewItem& o, const Q
     const bool visible = i.data(kVisibleRole).toBool();
     (visible ? eye_ : eyeOff_).paint(p, eyeRect(r), Qt::AlignCenter, visible ? QIcon::Normal : QIcon::Disabled);
 
-    const QRect tr = thumbRect(r);
+    // 클립 레이어는 들여쓰고(CSP 관례) 왼쪽에 클립 화살표.
+    const bool clipped = i.data(kClipRole).toBool();
+    QRect tr = thumbRect(r);
+    if (clipped) {
+        clip_.paint(p, QRect(tr.left(), r.center().y() - kMark / 2, kMark, kMark));
+        tr.translate(kMark + 2, 0);
+    }
     const QPixmap thumb = i.data(Qt::DecorationRole).value<QPixmap>();
     if (!thumb.isNull()) {
         p->drawPixmap(tr, thumb);
@@ -57,7 +64,7 @@ void LayerRowDelegate::paint(QPainter* p, const QStyleOptionViewItem& o, const Q
     p->setPen(sel ? Qt::white : QColor(0xdc, 0xdc, 0xdc));
     const QString name = o.fontMetrics.elidedText(i.data(Qt::DisplayRole).toString(), Qt::ElideRight,
                                                   nameRect(r).width());
-    p->drawText(nameRect(r), Qt::AlignVCenter | Qt::AlignLeft, name);
+    p->drawText(nameRect(r).adjusted(clipped ? kMark + 2 : 0, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, name);
 
     int x = r.right() - 8 - kMark;
     if (i.data(kAlphaRole).toBool()) {

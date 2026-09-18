@@ -196,6 +196,7 @@ std::vector<OpSpec> makeTable() {
                         P{"blendMode", "string", false, "normal|multiply|... (capabilities 참고)"},
                         P{"visible", "bool", false, ""}, P{"locked", "bool", false, ""},
                         P{"alphaLocked", "bool", false, "기존에 불투명한 픽셀만 고친다"},
+                        P{"clipToBelow", "bool", false, "아래 레이어의 알파 안에서만 보인다(클리핑)"},
                         P{"role", "string", false, "역할 태그(세션 한정. 파일에 저장되지 않는다)"},
                         P{"active", "bool", false, "true 면 이 레이어를 활성으로"}},
                        &ops::layerSetProps});

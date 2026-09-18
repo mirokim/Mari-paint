@@ -14,6 +14,7 @@ constexpr int kLayerIdRole = Qt::UserRole;
 constexpr int kVisibleRole = Qt::UserRole + 1;
 constexpr int kLockedRole = Qt::UserRole + 2;
 constexpr int kAlphaRole = Qt::UserRole + 3;
+constexpr int kClipRole = Qt::UserRole + 4;
 constexpr int kLayerRowHeight = 44;
 
 class LayerRowDelegate final : public QStyledItemDelegate {
@@ -37,7 +38,7 @@ private:
     [[nodiscard]] static QRect thumbRect(const QRect& r);
     [[nodiscard]] static QRect nameRect(const QRect& r);
 
-    QIcon eye_, eyeOff_, lock_, alpha_;
+    QIcon eye_, eyeOff_, lock_, alpha_, clip_;
 };
 
 } // namespace mari::ui

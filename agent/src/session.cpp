@@ -652,6 +652,7 @@ Json layerToJson(const Layer& layer, const RoleTags& roles, const Size& canvas) 
     j.set("visible", Json::boolean(layer.visible()));
     j.set("locked", Json::boolean(layer.locked()));
     j.set("alphaLocked", Json::boolean(layer.alphaLocked()));
+    j.set("clipToBelow", Json::boolean(layer.clipToBelow()));
     j.set("bounds", jsonRect(layer.bounds()));
     if (layer.kind() == LayerKind::Raster) {
         const TileMap* map = layer.tiles();

@@ -308,6 +308,9 @@ Result<Json> layerSetProps(AgentSession& s, const Json& req) {
     if (req.has("alphaLocked")) {
         layer.setAlphaLocked(req["alphaLocked"].asBool(false));
     }
+    if (req.has("clipToBelow")) {
+        layer.setClipToBelow(req["clipToBelow"].asBool(false));
+    }
     if (req.has("role")) {
         if (!req["role"].isString()) {
             return Err("role 은 문자열이어야 한다", ErrorCode::InvalidArgument);

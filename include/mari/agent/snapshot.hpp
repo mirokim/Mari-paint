@@ -50,6 +50,7 @@ struct SnapshotNode {
     bool visible = true;
     bool locked = false;
     bool alphaLocked = false;
+    bool clipToBelow = false;
     /// COW 스냅샷. 그룹 레이어는 nullptr.
     TileMapPtr tiles;
     /// 🔴 레이어 객체를 붙잡아 둔다 — 트리에서 지워져도 id 째로 되살릴 수 있다.
