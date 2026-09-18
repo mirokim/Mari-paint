@@ -13,7 +13,10 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <climits>
 #include <limits>
+#include <utility>
+#include <vector>
 
 namespace mari {
 namespace {
@@ -870,6 +873,152 @@ Result<SelectionMask> SelectionMask::fromContent(Size canvas, const TileMap& src
 
 Result<SelectionMask> SelectionMask::fromLayerAlpha(Size canvas, const TileMap& src) {
     return fromTiles(canvas, src, 0, [](const u8* px) noexcept -> u8 { return px[3]; });
+}
+
+Result<SelectionMask> SelectionMask::fromFlood(Size canvas, const TileMap& src, i32 seedX, i32 seedY,
+                                               i32 tolerance, i32 gapClose) {
+    if (tolerance < 0 || tolerance > 255) {
+        return Err("tolerance 는 0..255 다", ErrorCode::InvalidArgument);
+    }
+    if (canvas.width <= 0 || canvas.height <= 0) {
+        return Err("캔버스가 비었다", ErrorCode::InvalidArgument);
+    }
+    SelectionMask m = SelectionMask::empty(canvas);
+    if (seedX < 0 || seedY < 0 || seedX >= canvas.width || seedY >= canvas.height) {
+        return Ok(std::move(m));
+    }
+    const usize W = static_cast<usize>(canvas.width);
+    const usize H = static_cast<usize>(canvas.height);
+
+    // 픽셀 읽기: 타일 하나를 캐시한다(스캔라인이 한 타일 안에서 오래 머문다).
+    struct Reader {
+        const TileMap& tm;
+        TileCoord cached{INT32_MIN, INT32_MIN};
+        ConstTilePtr tile;
+        const u8* px(i32 x, i32 y) noexcept {
+            static const u8 transparent[4] = {0, 0, 0, 0};
+            const TileCoord c{tileIndexFor(x), tileIndexFor(y)};
+            if (!(c == cached)) {
+                cached = c;
+                tile = tm.at(c);
+            }
+            if (!tile) return transparent;
+            return tile->pixels() + static_cast<usize>(y - tileOrigin(c.ty)) * tile->stride() +
+                   static_cast<usize>(x - tileOrigin(c.tx)) * 4u;
+        }
+    } rd{src};
+
+    const u8* seedPx = rd.px(seedX, seedY);
+    const u8 ref[4] = {seedPx[0], seedPx[1], seedPx[2], seedPx[3]};
+    const auto matches = [&](i32 x, i32 y) noexcept -> bool {
+        const u8* p = rd.px(x, y);
+        const i32 d = std::max(std::max(std::abs(p[0] - ref[0]), std::abs(p[1] - ref[1])),
+                               std::max(std::abs(p[2] - ref[2]), std::abs(p[3] - ref[3])));
+        return d <= tolerance;
+    };
+
+    // 🔴 틈 닫기: 경계(불일치) 픽셀에서 gapClose 이내인 픽셀도 경계로 본다. 미리 "두꺼운 경계" 비트맵을
+    //    만들어 두면 플러드는 그것만 본다. 8K 캔버스면 8MB 비트 — 비트맵으로 든다.
+    std::vector<u8> blocked; // 1바이트 = 8픽셀 아님, 단순화를 위해 1바이트/픽셀 (8K 에서 64MB. 필요하면 비트로)
+    if (gapClose > 0) {
+        blocked.assign(W * H, 0);
+        std::vector<u8> edge(W * H, 0);
+        for (i32 y = 0; y < canvas.height; ++y)
+            for (i32 x = 0; x < canvas.width; ++x)
+                edge[static_cast<usize>(y) * W + static_cast<usize>(x)] = matches(x, y) ? 0 : 1;
+        // 분리 가능한 정사각 팽창(체비쇼프 반지름 gapClose) — 가로 후 세로.
+        std::vector<u8> tmp(W * H, 0);
+        for (i32 y = 0; y < canvas.height; ++y) {
+            i32 run = 0;
+            for (i32 x = 0; x < canvas.width; ++x) {
+                const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+                if (edge[i]) run = gapClose * 2 + 1;
+                if (run > 0) { tmp[i] = 1; --run; }
+            }
+            run = 0;
+            for (i32 x = canvas.width - 1; x >= 0; --x) {
+                const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+                if (edge[i]) run = gapClose * 2 + 1;
+                if (run > 0) { tmp[i] = 1; --run; }
+            }
+        }
+        for (i32 x = 0; x < canvas.width; ++x) {
+            i32 run = 0;
+            for (i32 y = 0; y < canvas.height; ++y) {
+                const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+                if (tmp[i]) run = gapClose * 2 + 1;
+                if (run > 0) { blocked[i] = 1; --run; }
+            }
+            run = 0;
+            for (i32 y = canvas.height - 1; y >= 0; --y) {
+                const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+                if (tmp[i]) run = gapClose * 2 + 1;
+                if (run > 0) { blocked[i] = 1; --run; }
+            }
+        }
+        // 시드 자체가 두꺼운 경계에 묻혔으면 시드만은 허용한다(아니면 아무것도 안 채워진다).
+        blocked[static_cast<usize>(seedY) * W + static_cast<usize>(seedX)] = 0;
+    }
+    const auto open = [&](i32 x, i32 y) noexcept -> bool {
+        if (!blocked.empty()) return !blocked[static_cast<usize>(y) * W + static_cast<usize>(x)];
+        return matches(x, y);
+    };
+
+    // 스캔라인 플러드. visited 는 비트맵.
+    std::vector<u8> visited((W * H + 7) / 8, 0);
+    const auto seen = [&](i32 x, i32 y) noexcept -> bool {
+        const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+        return (visited[i >> 3] >> (i & 7)) & 1u;
+    };
+    const auto mark = [&](i32 x, i32 y) noexcept {
+        const usize i = static_cast<usize>(y) * W + static_cast<usize>(x);
+        visited[i >> 3] = static_cast<u8>(visited[i >> 3] | (1u << (i & 7)));
+    };
+    std::vector<std::pair<i32, i32>> stack;
+    stack.emplace_back(seedX, seedY);
+    std::vector<u8> tileBuf(static_cast<usize>(kTileSize) * kTileSize);
+    while (!stack.empty()) {
+        auto [x, y] = stack.back();
+        stack.pop_back();
+        if (seen(x, y) || !open(x, y)) continue;
+        i32 x0 = x, x1 = x;
+        while (x0 > 0 && !seen(x0 - 1, y) && open(x0 - 1, y)) --x0;
+        while (x1 + 1 < canvas.width && !seen(x1 + 1, y) && open(x1 + 1, y)) ++x1;
+        for (i32 i = x0; i <= x1; ++i) mark(i, y);
+        for (const i32 ny : {y - 1, y + 1}) {
+            if (ny < 0 || ny >= canvas.height) continue;
+            bool inRun = false;
+            for (i32 i = x0; i <= x1; ++i) {
+                const bool o = !seen(i, ny) && open(i, ny);
+                if (o && !inRun) { stack.emplace_back(i, ny); inRun = true; }
+                else if (!o) inRun = false;
+            }
+        }
+    }
+
+    // 비트맵 → 타일. 비트가 하나라도 있는 타일만 쓴다.
+    const i32 tx1 = tileIndexFor(canvas.width - 1);
+    const i32 ty1 = tileIndexFor(canvas.height - 1);
+    for (i32 ty = 0; ty <= ty1; ++ty) {
+        for (i32 tx = 0; tx <= tx1; ++tx) {
+            bool any = false;
+            const i32 ox = tileOrigin(tx), oy = tileOrigin(ty);
+            for (i32 y = 0; y < kTileSize; ++y) {
+                for (i32 x = 0; x < kTileSize; ++x) {
+                    const i32 cx = ox + x, cy = oy + y;
+                    const bool on = cx < canvas.width && cy < canvas.height && seen(cx, cy);
+                    tileBuf[static_cast<usize>(y) * kTileSize + static_cast<usize>(x)] = on ? 255 : 0;
+                    any = any || on;
+                }
+            }
+            if (!any) continue;
+            const Rect tr = Rect{ox, oy, kTileSize, kTileSize}.intersected(Rect{0, 0, canvas.width, canvas.height});
+            const Result<void> w = m.writeRegion(tr, tileBuf.data(), static_cast<usize>(kTileSize));
+            if (!w.ok()) return w.error();
+        }
+    }
+    m.normalize();
+    return Ok(std::move(m));
 }
 
 } // namespace mari

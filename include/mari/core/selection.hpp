@@ -133,6 +133,11 @@ public:
     ///    그때는 `outside` 가 255 가 되고 타일은 여전히 0개다.
     [[nodiscard]] static Result<SelectionMask> fromColorRange(Size canvas, const TileMap& src,
                                                               Color8 ref, i32 tolerance);
+    /// 연속 영역(플러드) — `seed` 에서 시작해 4-연결로 이어진, 시드 색과 채널당 `tolerance` 이내인
+    /// 픽셀. 마술봉·페인트통의 알맹이다. 시드가 캔버스 밖이면 빈 선택.
+    /// `gapClose` 는 이만큼(px)의 틈을 닫는다(CSP "틈 닫기") — 경계 픽셀을 그 반지름만큼 두껍게 본다.
+    [[nodiscard]] static Result<SelectionMask> fromFlood(Size canvas, const TileMap& src, i32 seedX,
+                                                         i32 seedY, i32 tolerance, i32 gapClose = 0);
     /// 내용 기반 — 알파가 `threshold` 이상인 픽셀.
     [[nodiscard]] static Result<SelectionMask> fromContent(Size canvas, const TileMap& src,
                                                            u8 threshold = 1);

@@ -413,4 +413,49 @@ MARI_TEST(selection_op_names_round_trip) {
     CHECK(!selectionOpFromName("그런건없다").ok());
 }
 
+// ── 플러드(마술봉·페인트통) ───────────────────────────────────────────────
+
+MARI_TEST(flood_selects_only_the_contiguous_region) {
+    auto map = rgbaMap();
+    // 빨간 테두리 사각형(구멍 뚫린 상자). 안쪽은 투명, 바깥도 투명 — 연결돼 있지 않다.
+    paint(*map, Rect{40, 40, 100, 4}, Color8::rgba(255, 0, 0, 255));
+    paint(*map, Rect{40, 136, 100, 4}, Color8::rgba(255, 0, 0, 255));
+    paint(*map, Rect{40, 40, 4, 100}, Color8::rgba(255, 0, 0, 255));
+    paint(*map, Rect{136, 40, 4, 100}, Color8::rgba(255, 0, 0, 255));
+
+    auto inside = SelectionMask::fromFlood(kCanvas, *map, 90, 90, 0);
+    CHECK(inside.ok());
+    CHECK_EQ(inside.value().valueAt(90, 90), static_cast<u8>(255));
+    CHECK_EQ(inside.value().valueAt(60, 100), static_cast<u8>(255));
+    CHECK_EQ(inside.value().valueAt(41, 41), static_cast<u8>(0));  // 테두리
+    CHECK_EQ(inside.value().valueAt(10, 10), static_cast<u8>(0));  // 바깥(연결 안 됨)
+    // 안쪽 넓이 = 92×92
+    CHECK_EQ(inside.value().selectedPixels(), 92ull * 92ull);
+
+    // 테두리 색을 찍으면 테두리만.
+    auto edge = SelectionMask::fromFlood(kCanvas, *map, 41, 41, 0);
+    CHECK(edge.ok());
+    CHECK_EQ(edge.value().valueAt(41, 41), static_cast<u8>(255));
+    CHECK_EQ(edge.value().valueAt(90, 90), static_cast<u8>(0));
+}
+
+MARI_TEST(flood_gap_close_stops_leak_through_small_hole) {
+    auto map = rgbaMap();
+    paint(*map, Rect{40, 40, 100, 4}, Color8::rgba(0, 0, 0, 255));
+    paint(*map, Rect{40, 136, 100, 4}, Color8::rgba(0, 0, 0, 255));
+    paint(*map, Rect{40, 40, 4, 100}, Color8::rgba(0, 0, 0, 255));
+    paint(*map, Rect{136, 40, 4, 100}, Color8::rgba(0, 0, 0, 255));
+    // 오른쪽 벽에 3px 구멍
+    paint(*map, Rect{136, 80, 4, 3}, Color8::rgba(0, 0, 0, 0));
+
+    auto leak = SelectionMask::fromFlood(kCanvas, *map, 90, 90, 0, 0);
+    CHECK(leak.ok());
+    CHECK_EQ(leak.value().valueAt(200, 200), static_cast<u8>(255)); // 새어 나간다
+
+    auto closed = SelectionMask::fromFlood(kCanvas, *map, 90, 90, 0, 2);
+    CHECK(closed.ok());
+    CHECK_EQ(closed.value().valueAt(90, 90), static_cast<u8>(255));
+    CHECK_EQ(closed.value().valueAt(200, 200), static_cast<u8>(0));  // 틈이 닫혔다
+}
+
 MARI_TEST_MAIN()

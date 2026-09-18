@@ -3,6 +3,8 @@
 #define MARI_APP_LAYER_COMMANDS_HPP
 
 #include <mari/app/document.hpp>
+#include <mari/core/origin.hpp>
+#include <mari/core/selection.hpp>
 
 namespace mari::app {
 
@@ -12,6 +14,12 @@ namespace mari::app {
 
 /// 레이어 삭제(실행취소 가능 — 지운 레이어를 id 그대로 되살린다).
 [[nodiscard]] Result<void> removeLayerUndoable(Document& doc, LayerId id);
+
+/// 마스크(0..255)가 덮는 자리에 색을 쓴다(페인트통). 마스크 값만큼 섞고, 문서의 선택 마스크와 교집합한다.
+/// 실행취소 + 기록(RegionOpKind::Fill, 출처는 인자로 받는다 — 여기서 고르지 않는다).
+/// 🔴 기록이 고장 나면 되돌리고 실패한다(docs/06 결정 ④).
+[[nodiscard]] Result<u32> fillWithMask(Document& doc, const StrokeSource& src, LayerId layerId,
+                                       const SelectionMask& mask, Color8 color, bool eraser);
 
 } // namespace mari::app
 
