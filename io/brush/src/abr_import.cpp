@@ -25,6 +25,8 @@
 namespace mari::io::brush {
 
 using mari::brush::BrushTexture;
+using mari::brush::ColorDynamics;
+using mari::brush::DualBrush;
 using mari::brush::DynamicInput;
 using mari::brush::DynamicLink;
 using mari::brush::DynamicOutput;
@@ -357,6 +359,12 @@ public:
     }
 
     /// 하위 디스크립터로 내려간다. 컨테이너 키도 "사용함"으로 표시된다.
+    [[nodiscard]] const Descriptor* childAny(std::initializer_list<const char*> keys) {
+        for (const char* k : keys)
+            if (const Descriptor* d = child(k))
+                return d;
+        return nullptr;
+    }
     [[nodiscard]] const Descriptor* child(std::string_view key) {
         const DescValue* v = get(key);
         if (v == nullptr || v->type != DescType::Descriptor || !v->descriptor)
@@ -441,6 +449,12 @@ MappedInput mapControlSource(const std::string& key) {
         }
     }
     return m;
+}
+
+/// percentToRatio 의 approx 출력을 버리고 싶을 때.
+bool& approxDummy() {
+    static bool dummy = false;
+    return dummy;
 }
 
 /// 출력이 가산식(회전·흩뿌림)인가, 곱셈식(크기·불투명도·유량·원형도)인가.
@@ -736,12 +750,88 @@ MariBrushPreset translateBrush(const Descriptor& brushDesc, const std::string& p
     if (const Descriptor* var = t.child("scatterDynamics"))
         translateVariance(*var, t.path("scatterDynamics"), DynamicOutput::Scatter, preset, report,
                           used);
-    if (const DescValue* v = t.getAny({"Cnt ", "Count"})) {
-        preset.extraParams.emplace_back("abr/scatterCount", static_cast<f32>(v->asNumber()));
-        report.add(ImportSeverity::Degraded, t.path("Cnt "),
-                   "'" + preset.name + "' 의 스탬프 개수(" +
-                       std::to_string(static_cast<int>(v->asNumber())) +
-                       ")는 엔진이 지원하면 쓰이고, 아니면 1 로 동작한다.");
+    if (const DescValue* v = t.getAny({"Cnt ", "Count"}))
+        preset.scatterCount = std::clamp(static_cast<i32>(v->asNumber()), 1, 16);
+    if (const Descriptor* var = t.child("countDynamics")) {
+        // 개수 지터는 아직 흉내내지 않는다 — 읽은 것으로 표시만 한다.
+        TrackedDescriptor ct(*var, t.path("countDynamics"), used);
+        (void)ct.getAny({"jitter", "Jttr", "bVTy", "minimum"});
+        report.add(ImportSeverity::Degraded, t.path("countDynamics"),
+                   "'" + preset.name + "' 의 개수 지터는 고정 개수로 근사했다.");
+    }
+
+    // ── 젖은 가장자리 · 노이즈 · 에어브러시 · 부드럽게 ──
+    if (const DescValue* v = t.getAny({"Wtdg", "wetEdges"}))
+        preset.wetEdges = v->asBool();
+    if (const DescValue* v = t.getAny({"Nose", "noise"}))
+        preset.noise = v->asBool() ? 0.5f : 0.0f;
+    if (const DescValue* v = t.getAny({"Rpt ", "airbrush", "useBuildup"}))
+        preset.airbrush = v->asBool();
+    (void)t.getAny({"Smoo", "smoothing"}); // 선 보정은 앱 설정이 맡는다 — 조용히 넘긴다
+    (void)t.getAny({"useBrushSize", "protectTexture", "interfaceIconFrameDimmed", "toolOptions"});
+
+    // ── 색 변화 ──
+    if (const Descriptor* cv = t.childAny({"clVr", "clrVr", "colorDynamics"})) {
+        TrackedDescriptor ct(*cv, t.path("clVr"), used);
+        ColorDynamics cd;
+        bool approx = false;
+        if (const DescValue* v = ct.getAny({"FgBg", "fgBgJitter"})) cd.fgBgJitter = std::clamp(percentToRatio(*v, approx), 0.0f, 1.0f);
+        if (const DescValue* v = ct.getAny({"H   ", "hueJitter"})) cd.hueJitter = std::clamp(percentToRatio(*v, approx), 0.0f, 1.0f);
+        if (const DescValue* v = ct.getAny({"Strt", "saturationJitter"})) cd.saturationJitter = std::clamp(percentToRatio(*v, approx), 0.0f, 1.0f);
+        if (const DescValue* v = ct.getAny({"Brgh", "brightnessJitter"})) cd.brightnessJitter = std::clamp(percentToRatio(*v, approx), 0.0f, 1.0f);
+        if (const DescValue* v = ct.getAny({"purity", "Prty"})) cd.purity = std::clamp(percentToRatio(*v, approx), -1.0f, 1.0f);
+        if (const DescValue* v = ct.getAny({"perTip", "applyPerTip", "useTipDynamics"})) cd.perTip = v->asBool(true);
+        if (const DescValue* v = ct.getAny({"bVTy", "control"})) {
+            // 전경↔배경 제어원(필압 등)은 난수 지터로 근사한다.
+            const std::string control = v->type == DescType::Enumerated ? v->enumValue : "";
+            if (!control.empty() && control != "Off " && control != "off ")
+                report.add(ImportSeverity::Degraded, ct.path("bVTy"),
+                           "'" + preset.name + "' 의 전경/배경 지터 제어원 '" + control + "' 은 난수로 근사했다.");
+        }
+        (void)ct.getAny({"minimum", "jitter", "Jttr", "Mnm "});
+        preset.colorDynamics = cd;
+    }
+
+    // ── 듀얼 브러시 ──
+    if (const Descriptor* dd = t.child("dualBrush")) {
+        TrackedDescriptor dt(*dd, t.path("dualBrush"), used);
+        bool use = true;
+        if (const DescValue* v = dt.getAny({"useDualBrush", "useDual"})) use = v->asBool(true);
+        if (use) {
+            DualBrush dual;
+            MariBrushPreset tipHolder; // translateTip 은 프리셋을 받는다 — 팁·간격만 꺼내 쓴다
+            std::string dualSampled;
+            if (const Descriptor* tip = dt.child("Brsh")) {
+                TrackedDescriptor tt(*tip, dt.path("Brsh"), used);
+                translateTip(tt, tipHolder, report, dualSampled);
+                dual.tip = tipHolder.tip;
+                dual.spacing = tipHolder.spacing;
+            }
+            if (const DescValue* v = dt.getAny({"Spcn", "spacing"})) dual.spacing = std::max(0.01f, percentToRatio(*v, approxDummy()));
+            if (const DescValue* v = dt.getAny({"Scat", "scatter"})) dual.scatter = std::max(0.0f, percentToRatio(*v, approxDummy()));
+            if (const DescValue* v = dt.getAny({"Cnt ", "Count"})) dual.count = std::clamp(static_cast<i32>(v->asNumber()), 1, 16);
+            if (const DescValue* v = dt.getAny({"BlnM", "Bld ", "blendMode"})) {
+                BlendMode mode = BlendMode::Multiply;
+                if (v->type == DescType::Enumerated && mapBlendMode(v->enumValue, mode)) dual.blendMode = mode;
+                else report.add(ImportSeverity::Degraded, dt.path("BlnM"), "'" + preset.name + "' 의 듀얼 브러시 합성 모드를 몰라 곱하기로 뒀다.");
+            }
+            (void)dt.getAny({"Flip", "useScatter", "bothAxes"});
+            if (!dualSampled.empty()) {
+                for (const SampBrush& sb : samples) {
+                    if (sb.name == dualSampled) {
+                        dual.tip.kind = TipKind::Bitmap;
+                        dual.tip.bitmap = sb.mask;
+                        if (dual.tip.diameter <= 0.0f)
+                            dual.tip.diameter = static_cast<f32>(std::max(sb.mask.width, sb.mask.height));
+                        break;
+                    }
+                }
+                if (dual.tip.kind != TipKind::Bitmap)
+                    report.add(ImportSeverity::Degraded, dt.path("Brsh/sampledData"),
+                               "'" + preset.name + "' 의 듀얼 브러시 팁 비트맵을 파일에서 찾지 못해 원형으로 뒀다.");
+            }
+            preset.dual = std::move(dual);
+        }
     }
 
     // ── 텍스처 ──

@@ -121,9 +121,66 @@ public:
             break;
         }
 
-        if (preset_.texture.has_value() && report)
-            report->add(ImportSeverity::Dropped, "texture",
-                        "종이/브러시 텍스처는 native 엔진이 아직 합성하지 않습니다");
+        if (preset_.texture.has_value()) {
+            BrushTexture& tex = *preset_.texture;
+            if (tex.image.empty()) {
+                preset_.texture.reset();
+                if (report)
+                    report->add(ImportSeverity::Degraded, "texture", "텍스처 이미지가 비어 있어 텍스처를 껐습니다");
+            } else {
+                tex.scale = std::clamp(tex.scale, 0.05f, 64.0f);
+                tex.depth = clamp01(tex.depth);
+                switch (tex.blendMode) {
+                case BlendMode::Multiply:
+                case BlendMode::Subtract:
+                case BlendMode::Darken:
+                case BlendMode::Screen:
+                case BlendMode::Overlay:
+                case BlendMode::HardLight:
+                    break;
+                default:
+                    if (report)
+                        report->add(ImportSeverity::Degraded, "texture/blendMode",
+                                    std::string("텍스처 합성 '") + blendModeName(tex.blendMode) +
+                                        "' 은 곱하기로 근사합니다");
+                    tex.blendMode = BlendMode::Multiply;
+                    break;
+                }
+            }
+        }
+        if (preset_.dual.has_value()) {
+            DualBrush& d = *preset_.dual;
+            if (d.tip.kind == TipKind::Bitmap && d.tip.bitmap.empty()) {
+                d.tip.kind = TipKind::Procedural;
+                if (report)
+                    report->add(ImportSeverity::Degraded, "dual/tip", "듀얼 브러시 팁이 비어 있어 원형으로 대체했습니다");
+            }
+            d.tip.diameter = std::clamp(d.tip.diameter > 0.0f ? d.tip.diameter : preset_.tip.diameter,
+                                        kMinDiameter, kMaxDiameter);
+            d.tip.aspectRatio = std::clamp(d.tip.aspectRatio, 0.01f, 1.0f);
+            d.tip.hardness = clamp01(d.tip.hardness);
+            d.count = std::clamp(d.count, 1, 16);
+            switch (d.blendMode) {
+            case BlendMode::Multiply:
+            case BlendMode::Darken:
+            case BlendMode::Screen:
+            case BlendMode::Add:
+            case BlendMode::Overlay:
+                break;
+            default:
+                if (report)
+                    report->add(ImportSeverity::Degraded, "dual/blendMode",
+                                std::string("듀얼 브러시 합성 '") + blendModeName(d.blendMode) +
+                                    "' 은 곱하기로 근사합니다");
+                d.blendMode = BlendMode::Multiply;
+                break;
+            }
+        }
+        preset_.scatterCount = std::clamp(preset_.scatterCount, 1, 16);
+        preset_.noise = clamp01(preset_.noise);
+        if (preset_.airbrush && report)
+            report->add(ImportSeverity::Degraded, "airbrush",
+                        "에어브러시(멈춰 있어도 쌓임)는 native 엔진이 시간 반복을 하지 않아 보통 붓처럼 찍습니다");
 
         if (report)
             for (const auto& kv : preset_.extraParams)
@@ -157,6 +214,10 @@ public:
         rng_.seed(ctx.seed);
         hasLast_ = false;
         active_ = true;
+        // 색 변화: 획마다 한 번이면 여기서 뽑고, 스탬프마다면 stamp() 가 뽑는다.
+        strokeColor_ = ctx.color;
+        if (preset_.colorDynamics.active() && !preset_.colorDynamics.perTip)
+            strokeColor_ = jitterColor();
         // 핫 패스 버퍼는 여기서 잡는다. 타일 하나분(64×64)이면 충분하다.
         cov_.assign(static_cast<usize>(kTileSize) * static_cast<usize>(kTileSize), 0.0f);
         return Ok();
@@ -168,23 +229,33 @@ public:
 
         const Dynamics dyn = evalDynamics(in);
 
-        f32 diameter = std::clamp(preset_.tip.diameter * dyn.size, 0.0f, kMaxDiameter);
-        f32 alpha = clamp01(preset_.opacity * dyn.opacity) * clamp01(preset_.flow * dyn.flow);
+        const f32 diameter = std::clamp(preset_.tip.diameter * dyn.size, 0.0f, kMaxDiameter);
+        const f32 alpha = clamp01(preset_.opacity * dyn.opacity) * clamp01(preset_.flow * dyn.flow);
         if (diameter < kMinDiameter || alpha < kInkEpsilon) {
             updateLast(in);
             return; // 잉크가 없으면 타일도 더티도 없다
         }
 
-        // 흩뿌림 — 원판 안에서 균등하게.
-        f32 cx = in.pos.x;
-        f32 cy = in.pos.y;
-        if (dyn.scatter > 0.0f) {
-            const f32 ang = rng_.unit() * 6.2831853f;
-            const f32 rad = std::sqrt(rng_.unit()) * dyn.scatter * diameter;
-            cx += std::cos(ang) * rad;
-            cy += std::sin(ang) * rad;
+        // 포토샵 Count: 한 위치에 여러 번. 흩뿌림이 없으면 같은 자리에 겹쳐 찍힌다(포토샵도 그렇다).
+        const int count = preset_.scatterCount;
+        for (int i = 0; i < count; ++i) {
+            f32 cx = in.pos.x;
+            f32 cy = in.pos.y;
+            if (dyn.scatter > 0.0f) {
+                const f32 ang = rng_.unit() * 6.2831853f;
+                const f32 rad = std::sqrt(rng_.unit()) * dyn.scatter * diameter;
+                cx += std::cos(ang) * rad;
+                cy += std::sin(ang) * rad;
+            }
+            const Color color = (preset_.colorDynamics.active() && preset_.colorDynamics.perTip) ? jitterColor()
+                                                                                                : strokeColor_;
+            stampOnce(cx, cy, diameter, alpha, dyn, color, dirty);
         }
+        updateLast(in);
+    }
 
+    void stampOnce(f32 cx, f32 cy, f32 diameter, f32 alpha, const Dynamics& dyn, const Color& color,
+                   DirtyTiles& dirty) noexcept {
         const f32 rx = diameter * 0.5f;
         const f32 ry = std::max(rx * std::clamp(preset_.tip.aspectRatio * dyn.roundness, 0.01f,
                                                 1.0f),
@@ -193,16 +264,37 @@ public:
         const f32 ct = std::cos(theta);
         const f32 st = std::sin(theta);
 
+        // 듀얼 브러시 — 크기는 첫 팁과 같은 배율로 따라간다. 흩뿌림은 자기 것.
+        const DualBrush* dual = preset_.dual.has_value() ? &*preset_.dual : nullptr;
+        f32 dcx = cx, dcy = cy, dInvRx = 0.0f, dInvRy = 0.0f, dct = 1.0f, dst = 0.0f, dInner = 1.0f,
+            dFeather = 0.01f;
+        if (dual != nullptr) {
+            const f32 drx = std::max(dual->tip.diameter * dyn.size * 0.5f, kMinDiameter * 0.5f);
+            const f32 dry = std::max(drx * dual->tip.aspectRatio, kMinDiameter * 0.5f);
+            if (dual->scatter > 0.0f) {
+                const f32 ang = rng_.unit() * 6.2831853f;
+                const f32 rad = std::sqrt(rng_.unit()) * dual->scatter * drx * 2.0f;
+                dcx += std::cos(ang) * rad;
+                dcy += std::sin(ang) * rad;
+            }
+            const f32 dth = (dual->tip.angle + dyn.rotationDeg) * 0.017453292f;
+            dct = std::cos(dth);
+            dst = std::sin(dth);
+            dInvRx = 1.0f / drx;
+            dInvRy = 1.0f / dry;
+            const f32 daa = std::clamp(1.0f / std::max(drx, dry), 0.01f, 1.0f);
+            dFeather = std::clamp(std::max(1.0f - dual->tip.hardness, daa), 0.01f, 1.0f);
+            dInner = 1.0f - dFeather;
+        }
+
         // 경계 상자 — 회전한 타원/사각형을 전부 덮는 보수적 반경 + AA 여백 1px.
         const f32 half = std::sqrt(rx * rx + ry * ry) + 1.0f;
         const i32 x0 = static_cast<i32>(std::floor(cx - half));
         const i32 y0 = static_cast<i32>(std::floor(cy - half));
         const i32 x1 = static_cast<i32>(std::ceil(cx + half)); // 배타적
         const i32 y1 = static_cast<i32>(std::ceil(cy + half));
-        if (x1 <= x0 || y1 <= y0) {
-            updateLast(in);
+        if (x1 <= x0 || y1 <= y0)
             return;
-        }
 
         const f32 invRx = 1.0f / rx;
         const f32 invRy = 1.0f / ry;
@@ -210,6 +302,10 @@ public:
         const f32 aa = std::clamp(1.0f / std::max(rx, ry), 0.01f, 1.0f);
         const f32 feather = std::clamp(std::max(1.0f - preset_.tip.hardness, aa), 0.01f, 1.0f);
         const f32 inner = 1.0f - feather;
+
+        const BrushTexture* tex = preset_.texture.has_value() ? &*preset_.texture : nullptr;
+        const bool wet = preset_.wetEdges;
+        const f32 noise = preset_.noise;
 
         for (i32 ty = tileIndexFor(y0); ty <= tileIndexFor(y1 - 1); ++ty) {
             for (i32 tx = tileIndexFor(x0); tx <= tileIndexFor(x1 - 1); ++tx) {
@@ -227,13 +323,29 @@ public:
                 const i32 h = py1 - py0;
                 f32 maxCov = 0.0f;
                 for (i32 y = 0; y < h; ++y) {
-                    const f32 dy = static_cast<f32>(py0 + y) + 0.5f - cy;
+                    const f32 pyc = static_cast<f32>(py0 + y) + 0.5f;
+                    const f32 dy = pyc - cy;
                     f32* row = cov_.data() + static_cast<usize>(y) * static_cast<usize>(w);
                     for (i32 x = 0; x < w; ++x) {
-                        const f32 dx = static_cast<f32>(px0 + x) + 0.5f - cx;
+                        const f32 pxc = static_cast<f32>(px0 + x) + 0.5f;
+                        const f32 dx = pxc - cx;
                         const f32 lx = (dx * ct + dy * st) * invRx;
                         const f32 ly = (-dx * st + dy * ct) * invRy;
-                        const f32 c = coverage(lx, ly, inner, feather);
+                        f32 c = coverage(preset_.tip, lx, ly, inner, feather);
+                        if (c > 0.0f) {
+                            if (dual != nullptr) {
+                                const f32 ddx = pxc - dcx, ddy = pyc - dcy;
+                                const f32 dlx = (ddx * dct + ddy * dst) * dInvRx;
+                                const f32 dly = (-ddx * dst + ddy * dct) * dInvRy;
+                                c = combineDual(c, coverage(dual->tip, dlx, dly, dInner, dFeather), dual->blendMode);
+                            }
+                            if (tex != nullptr)
+                                c = applyTexture(c, *tex, tex->anchoredToCanvas ? pxc : dx, tex->anchoredToCanvas ? pyc : dy);
+                            if (wet)
+                                c = c < 0.5f ? c * 1.4f : 0.7f - (c - 0.5f) * 0.6f;
+                            if (noise > 0.0f)
+                                c *= 1.0f - noise * (1.0f - c) * hash01(px0 + x, py0 + y);
+                        }
                         row[x] = c;
                         maxCov = std::max(maxCov, c);
                     }
@@ -250,11 +362,10 @@ public:
                 Tile* tile = wt.value().get();
                 if (tile == nullptr)
                     continue;
-                blendTile(*tile, px0 - ox, py0 - oy, w, h, alpha);
+                blendTile(*tile, px0 - ox, py0 - oy, w, h, alpha, color);
                 dirty.push_back(tc); // 실제로 그린 타일만 덧붙인다
             }
         }
-        updateLast(in);
     }
 
     void endStroke(DirtyTiles&) noexcept override {
@@ -334,12 +445,12 @@ private:
 
     // ── 팁 커버리지 ──────────────────────────────────────────────────────
     /// (lx, ly) 는 팁 로컬 좌표(경계가 1.0). 0..1 잉크량을 돌려준다.
-    [[nodiscard]] f32 coverage(f32 lx, f32 ly, f32 inner, f32 feather) const noexcept {
-        if (preset_.tip.kind == TipKind::Bitmap)
-            return sampleBitmap(lx, ly);
+    [[nodiscard]] static f32 coverage(const BrushTip& tip, f32 lx, f32 ly, f32 inner, f32 feather) noexcept {
+        if (tip.kind == TipKind::Bitmap)
+            return sampleBitmap(tip.bitmap, lx, ly);
 
         f32 r;
-        switch (preset_.tip.shape) {
+        switch (tip.shape) {
         case ProceduralShape::Square:
             r = std::max(std::fabs(lx), std::fabs(ly));
             break;
@@ -360,8 +471,7 @@ private:
     }
 
     /// 비트맵 팁 쌍선형 샘플. 바깥은 0.
-    [[nodiscard]] f32 sampleBitmap(f32 lx, f32 ly) const noexcept {
-        const GrayImage& img = preset_.tip.bitmap;
+    [[nodiscard]] static f32 sampleBitmap(const GrayImage& img, f32 lx, f32 ly) noexcept {
         if (img.empty() || lx < -1.0f || lx > 1.0f || ly < -1.0f || ly > 1.0f)
             return 0.0f;
         const f32 fx = (lx * 0.5f + 0.5f) * static_cast<f32>(img.width) - 0.5f;
@@ -380,6 +490,97 @@ private:
         const f32 a = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * tx;
         const f32 b = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * tx;
         return a + (b - a) * tyf;
+    }
+
+    // ── 듀얼 · 텍스처 · 노이즈 · 색 변화 ──────────────────────────────────
+    [[nodiscard]] static f32 combineDual(f32 c, f32 d, BlendMode mode) noexcept {
+        switch (mode) {
+        case BlendMode::Darken:  return std::min(c, d);
+        case BlendMode::Screen:  return c + d - c * d;
+        case BlendMode::Add:     return std::min(1.0f, c + d);
+        case BlendMode::Overlay: return c < 0.5f ? 2.0f * c * d : 1.0f - 2.0f * (1.0f - c) * (1.0f - d);
+        default:                 return c * d; // Multiply
+        }
+    }
+
+    /// 텍스처 값을 커버리지에 얹는다. 텍스처는 "밝을수록 잉크가 잘 묻는" 종이 결이다(0..1).
+    [[nodiscard]] static f32 applyTexture(f32 c, const BrushTexture& tex, f32 x, f32 y) noexcept {
+        const GrayImage& img = tex.image;
+        // 캔버스 좌표를 배율로 나눠 타일링(음수도 감싼다).
+        const f32 fx = x / tex.scale;
+        const f32 fy = y / tex.scale;
+        i32 ix = static_cast<i32>(std::floor(fx)) % img.width;
+        i32 iy = static_cast<i32>(std::floor(fy)) % img.height;
+        if (ix < 0) ix += img.width;
+        if (iy < 0) iy += img.height;
+        const f32 t0 = static_cast<f32>(img.pixels[static_cast<usize>(iy) * static_cast<usize>(img.width) +
+                                                   static_cast<usize>(ix)]) * (1.0f / 255.0f);
+        // depth 0 = 텍스처 없음(1.0), depth 1 = 텍스처 그대로.
+        const f32 t = 1.0f - tex.depth * (1.0f - t0);
+        switch (tex.blendMode) {
+        case BlendMode::Subtract:  return std::max(0.0f, c - tex.depth * (1.0f - t0));
+        case BlendMode::Darken:    return std::min(c, t);
+        case BlendMode::Screen:    return c * (t + (1.0f - t) * c); // 밝은 결이 중심을 남기고 가장자리를 깎는다
+        case BlendMode::Overlay:
+        case BlendMode::HardLight: return c < 0.5f ? 2.0f * c * t : 1.0f - 2.0f * (1.0f - c) * (1.0f - t);
+        default:                   return c * t; // Multiply
+        }
+    }
+
+    /// 픽셀 좌표 해시 → 0..1. 스탬프 위치와 무관하게 캔버스에 고정된 노이즈라 겹쳐 찍어도 결이 유지된다.
+    [[nodiscard]] static f32 hash01(i32 x, i32 y) noexcept {
+        u32 h = static_cast<u32>(x) * 0x8da6b343u ^ static_cast<u32>(y) * 0xd8163841u;
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        return static_cast<f32>(h & 0xffffffu) * (1.0f / 16777216.0f);
+    }
+
+    /// 색 변화 — 전경↔배경 · 색조 · 채도 · 명도 지터. 난수는 rng_ 에서 뽑아 재현된다.
+    [[nodiscard]] Color jitterColor() noexcept {
+        const ColorDynamics& cd = preset_.colorDynamics;
+        const Color& fg = ctx_->color;
+        const Color& bg = ctx_->background;
+        f32 r = static_cast<f32>(fg.r), g = static_cast<f32>(fg.g), b = static_cast<f32>(fg.b);
+        if (cd.fgBgJitter > 0.0f) {
+            const f32 t = rng_.unit() * cd.fgBgJitter;
+            r += (static_cast<f32>(bg.r) - r) * t;
+            g += (static_cast<f32>(bg.g) - g) * t;
+            b += (static_cast<f32>(bg.b) - b) * t;
+        }
+        r *= 1.0f / 255.0f; g *= 1.0f / 255.0f; b *= 1.0f / 255.0f;
+        // RGB → HSV
+        const f32 mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+        const f32 d = mx - mn;
+        f32 h = 0.0f;
+        if (d > 1e-6f) {
+            if (mx == r)      h = std::fmod((g - b) / d, 6.0f);
+            else if (mx == g) h = (b - r) / d + 2.0f;
+            else              h = (r - g) / d + 4.0f;
+            h *= 60.0f;
+            if (h < 0.0f) h += 360.0f;
+        }
+        f32 sat = mx > 1e-6f ? d / mx : 0.0f;
+        f32 v = mx;
+        const auto pm = [this]() noexcept { return rng_.unit() * 2.0f - 1.0f; };
+        if (cd.hueJitter > 0.0f)        h = std::fmod(h + pm() * cd.hueJitter * 180.0f + 360.0f, 360.0f);
+        if (cd.saturationJitter > 0.0f) sat = clamp01(sat + pm() * cd.saturationJitter);
+        if (cd.brightnessJitter > 0.0f) v = clamp01(v + pm() * cd.brightnessJitter);
+        if (cd.purity > 0.0f)           sat = clamp01(sat + (1.0f - sat) * cd.purity);
+        else if (cd.purity < 0.0f)      sat = clamp01(sat * (1.0f + cd.purity));
+        // HSV → RGB
+        const f32 c = v * sat;
+        const f32 hh = h / 60.0f;
+        const f32 xx = c * (1.0f - std::fabs(std::fmod(hh, 2.0f) - 1.0f));
+        f32 rr = 0, gg = 0, bb = 0;
+        if (hh < 1)      { rr = c; gg = xx; }
+        else if (hh < 2) { rr = xx; gg = c; }
+        else if (hh < 3) { gg = c; bb = xx; }
+        else if (hh < 4) { gg = xx; bb = c; }
+        else if (hh < 5) { rr = xx; bb = c; }
+        else             { rr = c; bb = xx; }
+        const f32 m = v - c;
+        return Color{toByte(rr + m), toByte(gg + m), toByte(bb + m), fg.a};
     }
 
     // ── 선택 마스크 ──────────────────────────────────────────────────────
@@ -421,16 +622,16 @@ private:
     }
 
     // ── 합성 ─────────────────────────────────────────────────────────────
-    void blendTile(Tile& tile, i32 lx0, i32 ly0, i32 w, i32 h, f32 alpha) noexcept {
+    void blendTile(Tile& tile, i32 lx0, i32 ly0, i32 w, i32 h, f32 alpha, const Color& color) noexcept {
         u8* base = tile.mutablePixels();
         if (base == nullptr)
             return;
         const usize stride = tile.stride();
         const BlendMode mode = ctx_->eraser ? BlendMode::Erase : preset_.blendMode;
-        const f32 sr = static_cast<f32>(ctx_->color.r) * (1.0f / 255.0f);
-        const f32 sg = static_cast<f32>(ctx_->color.g) * (1.0f / 255.0f);
-        const f32 sb = static_cast<f32>(ctx_->color.b) * (1.0f / 255.0f);
-        const f32 srcA = static_cast<f32>(ctx_->color.a) * (1.0f / 255.0f);
+        const f32 sr = static_cast<f32>(color.r) * (1.0f / 255.0f);
+        const f32 sg = static_cast<f32>(color.g) * (1.0f / 255.0f);
+        const f32 sb = static_cast<f32>(color.b) * (1.0f / 255.0f);
+        const f32 srcA = static_cast<f32>(color.a) * (1.0f / 255.0f);
 
         for (i32 y = 0; y < h; ++y) {
             const f32* row = cov_.data() + static_cast<usize>(y) * static_cast<usize>(w);
@@ -508,6 +709,7 @@ private:
     /// 🔴 "제한 없음"이면 nullptr 이다. 핫 패스는 이 포인터 하나만 본다.
     const SelectionMask* sel_ = nullptr;
     Rng rng_{};
+    Color strokeColor_{};
     std::vector<f32> cov_;
     PointF lastPos_{};
     f32 lastDir_ = 0.0f;

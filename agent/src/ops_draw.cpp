@@ -10,6 +10,8 @@
 #include <mari/agent/session.hpp>
 
 #include <mari/app/document.hpp>
+#include <mari/agent/address.hpp>
+#include <mari/app/layer_commands.hpp>
 #include <mari/app/live_stroke.hpp>
 #include <mari/app/stroke_entry.hpp>
 #include <mari/core/undo.hpp>
@@ -89,6 +91,10 @@ struct StrokePoint {
     f64 y = 0.0;
     f32 pressure = 1.0f;
     bool hasPressure = false;
+    f32 tiltX = 0.0f; ///< -1..1 (사람 펜의 기울기 — 도 단위로 바꿔 파이프라인에 준다)
+    f32 tiltY = 0.0f;
+    bool hasTilt = false;
+    f64 timeMs = -1.0; ///< 획 시작 기준 ms. 음수면 "없음"(균등 간격으로 채운다)
 };
 
 Result<std::vector<StrokePoint>> parsePoints(const Json& v) {
@@ -117,7 +123,7 @@ Result<std::vector<StrokePoint>> parsePoints(const Json& v) {
                 sp.hasPressure = true;
             }
         } else if (p.isObject()) {
-            static const char* kKnown[] = {"x", "y", "p", "pressure"};
+            static const char* kKnown[] = {"x", "y", "p", "pressure", "tx", "ty", "t"};
             for (const std::string& k : p.keys()) {
                 bool known = false;
                 for (const char* kk : kKnown) {
@@ -125,7 +131,7 @@ Result<std::vector<StrokePoint>> parsePoints(const Json& v) {
                 }
                 if (!known) {
                     return Err("points[" + std::to_string(i) + "] 에 모르는 키가 있다: \"" + k +
-                                   "\" (x|y|p)",
+                                   "\" (x|y|p|tx|ty|t)",
                                ErrorCode::InvalidArgument);
                 }
             }
@@ -139,6 +145,21 @@ Result<std::vector<StrokePoint>> parsePoints(const Json& v) {
                 sp.pressure = static_cast<f32>(p.has("p") ? p["p"].asNumber(1.0)
                                                           : p["pressure"].asNumber(1.0));
                 sp.hasPressure = true;
+            }
+            if (p.has("tx") || p.has("ty")) {
+                sp.tiltX = static_cast<f32>(p["tx"].asNumber(0.0));
+                sp.tiltY = static_cast<f32>(p["ty"].asNumber(0.0));
+                if (sp.tiltX < -1.0f || sp.tiltX > 1.0f || sp.tiltY < -1.0f || sp.tiltY > 1.0f) {
+                    return Err("기울기(tx, ty)는 -1..1 이다(points[" + std::to_string(i) + "])",
+                               ErrorCode::InvalidArgument);
+                }
+                sp.hasTilt = true;
+            }
+            if (p.has("t")) {
+                sp.timeMs = p["t"].asNumber(-1.0);
+                if (!(sp.timeMs >= 0.0)) {
+                    return Err("t(ms)는 0 이상이다(points[" + std::to_string(i) + "])", ErrorCode::InvalidArgument);
+                }
             }
         } else {
             return Err("points[" + std::to_string(i) + "] 는 객체나 배열이어야 한다",
@@ -340,6 +361,13 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
     brush::StrokeContext ctx(s.strokeSource());
     ctx.target = layer.value()->tiles();
     ctx.color = color.value();
+    if (req.has("background")) {
+        const Result<Color8> bg = colorFromJson(req["background"], Color8::rgba(255, 255, 255, 255));
+        if (!bg.ok()) {
+            return bg.error();
+        }
+        ctx.background = bg.value();
+    }
     ctx.eraser = req["eraser"].asBool(false);
     ctx.alphaLocked = layer.value()->alphaLocked();
     ctx.layerId = layer.value()->id();
@@ -379,8 +407,12 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
         e.pressure = p.hasPressure ? p.pressure : pressureProfileAt(profile, t);
         e.pressureMax = 1.0f;
         e.hasPressure = true;
-        e.hasTilt = false;
-        e.timestampNs = static_cast<u64>(i) * kPointIntervalNs;
+        // 기울기는 사람 펜과 같은 단위(도)로 준다. -1..1 → ±60°.
+        e.hasTilt = p.hasTilt;
+        e.tiltXDeg = p.tiltX * 60.0f;
+        e.tiltYDeg = p.tiltY * 60.0f;
+        // 시간을 주면 그대로(속도 동적 반응이 사람처럼 반응한다), 없으면 균등 간격.
+        e.timestampNs = p.timeMs >= 0.0 ? static_cast<u64>(p.timeMs * 1e6) : static_cast<u64>(i) * kPointIntervalNs;
         return e;
     };
 
@@ -492,6 +524,70 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
 }
 
 // ── 픽셀 연산 (보조 수단이다. 주 API 가 아니다) ─────────────────────────
+
+/// 페인트통 — 클릭한 점과 이어진 같은 색 영역을 전경색으로(GUI 의 G 도구와 같은 코어 경로).
+Result<Json> bucket(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const Result<void> ok = requireRecording(*doc);
+    if (!ok.ok()) {
+        return ok.error();
+    }
+    const Result<LayerPtr> layer = paintTarget(s, req, *doc);
+    if (!layer.ok()) {
+        return layer.error();
+    }
+    const Json& at = req["at"];
+    if (!at.isArray() || at.size() != 2) {
+        return Err("at 은 [x, y] 다", ErrorCode::InvalidArgument);
+    }
+    const i32 sx = static_cast<i32>(std::floor(at.at(0).asNumber()));
+    const i32 sy = static_cast<i32>(std::floor(at.at(1).asNumber()));
+    const i64 tol = req["tolerance"].asInt(32);
+    const i64 gap = req["gapClose"].asInt(0);
+    if (tol < 0 || tol > 255 || gap < 0 || gap > 64) {
+        return Err("tolerance 는 0..255, gapClose 는 0..64 다", ErrorCode::InvalidArgument);
+    }
+    const Result<Color8> color = colorFromJson(req["color"], Color8::rgba(0, 0, 0, 255));
+    if (!color.ok()) {
+        return color.error();
+    }
+    const bool eraser = req["eraser"].asBool(false);
+    // 기준 레이어: 기본은 칠할 레이어. `sample` 로 다른 레이어(선화)를 볼 수 있다.
+    const TileMap* sample = layer.value()->tiles();
+    if (req.has("sample")) {
+        const Result<LayerId> sid = resolveLayer(doc->layers(), s.roles(), req["sample"]);
+        if (!sid.ok()) {
+            return sid.error();
+        }
+        const LayerPtr sl = doc->layers().find(sid.value());
+        if (!sl || sl->tiles() == nullptr) {
+            return Err("sample 레이어가 래스터가 아니다", ErrorCode::InvalidArgument);
+        }
+        sample = sl->tiles();
+    }
+    Result<SelectionMask> region = SelectionMask::fromFlood(doc->canvasSize(), *sample, sx, sy,
+                                                            static_cast<i32>(tol), static_cast<i32>(gap));
+    if (!region.ok()) {
+        return region.error();
+    }
+    // 🔴 출처는 세션 게이트가 준 것. fillWithMask 가 선택 마스크를 곱하고 저널에 남긴다.
+    const Result<u32> r = app::fillWithMask(*doc, s.strokeSource(), layer.value()->id(), region.value(),
+                                            color.value(), eraser);
+    if (!r.ok()) {
+        return r.error();
+    }
+    const Rect area = region.value().bounds();
+    s.noteDirty(area);
+    Json out = Json::object();
+    out.set("layer", Json::integer(layer.value()->id()));
+    out.set("area", jsonRect(area));
+    out.set("changedPixels", Json::integer(static_cast<i64>(r.value())));
+    return Ok(std::move(out));
+}
 
 Result<Json> fill(AgentSession& s, const Json& req) {
     const Result<app::Document*> d = s.requireDocument();

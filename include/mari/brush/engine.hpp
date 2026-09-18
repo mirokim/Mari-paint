@@ -66,6 +66,8 @@ struct StrokeContext {
     bool alphaLocked = false;
     /// 전경색.
     Color color{};
+    /// 배경색 — 색 변화(ColorDynamics.fgBgJitter)가 이쪽으로 오간다.
+    Color background{255, 255, 255, 255};
     /// 난수 시드. 같은 시드 + 같은 입력 = 같은 획. 재현성이 Sigan 대조에 필요하다.
     u64 seed = 0;
     /// 기록용 레이어 id (더티 알림·저널에 붙는다).

@@ -280,19 +280,21 @@ MARI_TEST(engine_reports_what_it_could_not_do) {
     MariBrushPreset p = circlePreset(20.0f);
     p.texture = BrushTexture{};
     p.texture->image = GrayImage{2, 2, {0, 1, 2, 3}};
+    p.texture->blendMode = BlendMode::Hue; // 텍스처 합성으로는 말이 안 된다 → 곱하기로 근사
     p.blendMode = BlendMode::Overlay; // 아직 못 한다
     p.extraParams.push_back({"csp/effector_size", 1.0f});
     p.tip.kind = TipKind::Bitmap; // 비트맵인데 그림이 없다
+    p.airbrush = true;            // 시간 반복은 안 한다
 
     ImportReport rep;
     auto e = makeNativeEngine();
     CHECK(e.value()->setPreset(p, &rep).ok());
 
-    CHECK(rep.hasDropped()); // 텍스처
+    CHECK(!rep.hasDropped()); // 텍스처는 이제 합성한다 — 버리는 게 없어야 한다
     CHECK(!rep.clean());
-    bool texture = false, blend = false, extra = false, bitmap = false;
+    bool texture = false, blend = false, extra = false, bitmap = false, air = false;
     for (const auto& n : rep.notes) {
-        if (n.sourceKey == "texture" && n.severity == ImportSeverity::Dropped)
+        if (n.sourceKey == "texture/blendMode" && n.severity == ImportSeverity::Degraded)
             texture = true;
         if (n.sourceKey == "blendMode" && n.severity == ImportSeverity::Degraded)
             blend = true;
@@ -300,11 +302,94 @@ MARI_TEST(engine_reports_what_it_could_not_do) {
             extra = true;
         if (n.sourceKey == "tip/bitmap" && n.severity == ImportSeverity::Degraded)
             bitmap = true;
+        if (n.sourceKey == "airbrush" && n.severity == ImportSeverity::Degraded)
+            air = true;
     }
     CHECK(texture);
     CHECK(blend);
     CHECK(extra);
     CHECK(bitmap);
+    CHECK(air);
+}
+
+MARI_TEST(engine_texture_multiplies_coverage) {
+    // 2×1 텍스처 {0, 255}, 배율 1, 캔버스 고정: 짝수 x 는 잉크 0, 홀수 x 는 그대로.
+    MariBrushPreset p = circlePreset(40.0f);
+    p.texture = BrushTexture{};
+    p.texture->image = GrayImage{2, 1, {0, 255}};
+    p.texture->scale = 1.0f;
+    p.texture->depth = 1.0f;
+    p.texture->anchoredToCanvas = true;
+    auto e = makeNativeEngine();
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    FakeTileMap map;
+    (void)stampOnce(*e.value(), map, at(100.0f, 100.0f));
+    CHECK_EQ(map.pixelAt(100, 100).a, 0);   // 짝수 x → 텍스처 0
+    CHECK_EQ(map.pixelAt(101, 100).a, 255); // 홀수 x → 텍스처 1
+    // depth 0.5 면 짝수 x 도 반은 묻는다.
+    p.texture->depth = 0.5f;
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    FakeTileMap map2;
+    (void)stampOnce(*e.value(), map2, at(100.0f, 100.0f));
+    CHECK(map2.pixelAt(100, 100).a > 100 && map2.pixelAt(100, 100).a < 155);
+}
+
+MARI_TEST(engine_dual_brush_masks_the_tip) {
+    // 듀얼 팁이 첫 팁보다 작으면 결과는 작은 쪽만큼만 찍힌다(곱하기).
+    MariBrushPreset p = circlePreset(40.0f);
+    p.dual = DualBrush{};
+    p.dual->tip.kind = TipKind::Procedural;
+    p.dual->tip.diameter = 10.0f;
+    p.dual->tip.hardness = 1.0f;
+    auto e = makeNativeEngine();
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    FakeTileMap map;
+    (void)stampOnce(*e.value(), map, at(100.0f, 100.0f));
+    CHECK_EQ(map.pixelAt(100, 100).a, 255);
+    CHECK_EQ(map.pixelAt(112, 100).a, 0); // 첫 팁 안(반지름 20)이지만 듀얼 밖(반지름 5)
+}
+
+MARI_TEST(engine_color_dynamics_change_color_per_stamp_reproducibly) {
+    MariBrushPreset p = circlePreset(6.0f);
+    p.colorDynamics.hueJitter = 1.0f;
+    p.colorDynamics.perTip = true;
+    auto e = makeNativeEngine();
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    const auto run = [&](FakeTileMap& map) {
+        StrokeContext c = ctxFor(&map);
+        c.color = Color8::rgba(255, 0, 0, 255);
+        DirtyTiles dirty;
+        CHECK(e.value()->beginStroke(c).ok());
+        e.value()->stamp(at(20.0f, 20.0f), dirty);
+        e.value()->stamp(at(60.0f, 20.0f), dirty);
+        e.value()->stamp(at(100.0f, 20.0f), dirty);
+        e.value()->endStroke(dirty);
+    };
+    FakeTileMap a, b;
+    run(a);
+    run(b);
+    const auto p1 = a.pixelAt(20, 20), p2 = a.pixelAt(60, 20), p3 = a.pixelAt(100, 20);
+    CHECK(p1.a == 255 && p2.a == 255 && p3.a == 255);
+    // 셋이 전부 같은 색일 확률은 사실상 0 이다.
+    CHECK(!(p1.r == p2.r && p1.g == p2.g && p1.b == p2.b && p2.r == p3.r && p2.g == p3.g && p2.b == p3.b));
+    // 같은 시드 → 같은 색.
+    CHECK(b.pixelAt(20, 20).r == p1.r && b.pixelAt(20, 20).g == p1.g && b.pixelAt(20, 20).b == p1.b);
+    CHECK(b.pixelAt(60, 20).r == p2.r && b.pixelAt(60, 20).g == p2.g && b.pixelAt(60, 20).b == p2.b);
+}
+
+MARI_TEST(engine_scatter_count_stacks_ink) {
+    // 반투명 스탬프를 같은 자리에 3번 찍으면 1번보다 진하다.
+    MariBrushPreset p = circlePreset(10.0f);
+    p.opacity = 0.3f;
+    auto e = makeNativeEngine();
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    FakeTileMap one;
+    (void)stampOnce(*e.value(), one, at(50.0f, 50.0f));
+    p.scatterCount = 3;
+    CHECK(e.value()->setPreset(p, nullptr).ok());
+    FakeTileMap three;
+    (void)stampOnce(*e.value(), three, at(50.0f, 50.0f));
+    CHECK(three.pixelAt(50, 50).a > one.pixelAt(50, 50).a + 60);
 }
 
 MARI_TEST(engine_clean_preset_reports_nothing) {

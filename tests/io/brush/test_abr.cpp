@@ -72,6 +72,8 @@ std::vector<u8> buildFullAbr() {
             // 아래 둘은 일부러 번역하지 않는다 — 리포트에 Dropped 로 떠야 한다.
             {"Nose", fx::dvBool(true)},
             {"Wtdg", fx::dvBool(true)},
+            {"protectTexture", fx::dvBool(true)},
+            {"someUnknownKey", fx::dvBool(true)},
         });
 
     const auto brush1 =
@@ -179,12 +181,10 @@ MARI_TEST(abr_imports_dynamics_not_just_texture) {
     if (scatter != nullptr)
         CHECK_NEAR(scatter->curve.points[1].y, 1.5f, 0.001f); // 150%
 
-    // 스탬프 개수는 엔진에 따라 다르므로 extraParams 로 넘기고 리포트에 적는다.
-    bool sawCount = false;
-    for (const auto& [k, v] : pen->extraParams)
-        if (k == "abr/scatterCount" && v > 2.5f && v < 3.5f)
-            sawCount = true;
-    CHECK(sawCount);
+    // 스탬프 개수 · 젖은 가장자리 · 노이즈는 엔진이 직접 쓴다.
+    CHECK_EQ(pen->scatterCount, 3);
+    CHECK(pen->wetEdges);
+    CHECK(pen->noise > 0.0f);
 }
 
 MARI_TEST(abr_imports_texture_pixels_from_patt) {
@@ -220,8 +220,11 @@ MARI_TEST(abr_reports_every_untranslated_key) {
     const mb::ImportReport& report = result.value().report;
 
     CHECK(report.hasDropped());
-    CHECK(hasNote(report, mb::ImportSeverity::Dropped, "Nose"));
-    CHECK(hasNote(report, mb::ImportSeverity::Dropped, "Wtdg"));
+    CHECK(hasNote(report, mb::ImportSeverity::Dropped, "someUnknownKey"));
+    // 이제 번역하는 키는 Dropped 로 뜨면 안 된다.
+    CHECK(!hasNote(report, mb::ImportSeverity::Dropped, "Nose"));
+    CHECK(!hasNote(report, mb::ImportSeverity::Dropped, "Wtdg"));
+    CHECK(!hasNote(report, mb::ImportSeverity::Dropped, "protectTexture"));
     // 노트에는 브러시 이름이 들어가 사용자가 어느 브러시인지 알 수 있어야 한다.
     bool named = false;
     for (const auto& n : report.notes)

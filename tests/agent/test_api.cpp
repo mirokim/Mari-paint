@@ -211,7 +211,8 @@ MARI_TEST(capabilities_matches_dispatch) {
     for (const char* name : {"doc.create", "doc.open", "doc.save", "doc.close", "doc.describe",
                              "capabilities", "snapshot", "restore", "branch", "diff",
                              "layer.list", "layer.add", "layer.remove", "layer.move",
-                             "layer.duplicate", "layer.merge", "layer.setProps", "stroke", "fill",
+                             "layer.duplicate", "layer.merge", "layer.setProps", "layer.flatten", "layer.mask",
+                             "layer.group", "layer.ungroup", "stroke", "fill", "bucket",
                              "erase", "gradient", "transform", "select", "select.invert",
                              "select.expand", "select.feather", "brush.list", "brush.import",
                              "brush.set", "brush.describe", "render", "thumbnail", "compare",
@@ -868,6 +869,106 @@ MARI_TEST(stroke_undo_is_exact) {
     CHECK_EQ(hash(), base); // 한 픽셀도 남지 않았다
     CHECK(s->document()->redo().ok());
     CHECK_EQ(hash(), painted);
+}
+
+// ── 사람이 쓰는 도구를 헤드리스에서도 똑같이 ──────────────────────────────
+
+MARI_TEST(agent_can_use_bucket_wand_mask_group_flatten) {
+    std::unique_ptr<AgentSession> s = sessionWith(mari_ctx, 128, 128);
+    CHECK(s != nullptr);
+    if (s == nullptr) {
+        return;
+    }
+    const auto alphaAt = [&](i32 x, i32 y) -> int {
+        std::vector<u8> px(static_cast<usize>(128) * 128u * 4u);
+        (void)s->document()->layers().flatten(Rect{0, 0, 128, 128}, px.data(), 128u * 4u);
+        return px[(static_cast<usize>(y) * 128u + static_cast<usize>(x)) * 4u + 3u];
+    };
+
+    // 사각 선화(선 두께 8)를 fill 로 그린다: 바깥 테두리.
+    for (const char* region : {"[20,20,88,8]", "[20,92,88,8]", "[20,20,8,80]", "[100,20,8,80]"}) {
+        Json f = req("fill");
+        f.set("region", Json::parse(region).value());
+        f.set("color", Json::string("#000000"));
+        CHECK(s->execute(f)["ok"].asBool());
+    }
+    // 페인트통: 안쪽을 클릭하면 안쪽만 채워진다.
+    Json b = req("bucket");
+    b.set("at", Json::parse("[60,60]").value());
+    b.set("color", Json::string("#FF0000"));
+    const Json bucketed = s->execute(b);
+    CHECK(bucketed["ok"].asBool());
+    CHECK(bucketed["result"]["changedPixels"].asInt() > 0);
+    CHECK_EQ(alphaAt(60, 60), 255);
+    CHECK_EQ(alphaAt(5, 5), 0); // 바깥은 그대로 투명
+
+    // 마술봉: 바깥(투명)을 잡으면 안쪽은 선택에 안 들어간다.
+    Json w = req("select");
+    w.set("mode", Json::string("wand"));
+    w.set("at", Json::parse("[5,5]").value());
+    const Json wand = s->execute(w);
+    CHECK(wand["ok"].asBool());
+    CHECK_EQ(s->document()->selectionMask().valueAt(5, 5), 255);
+    CHECK_EQ(s->document()->selectionMask().valueAt(60, 60), 0);
+
+    // 마스크: 선택(바깥)만 보이게 → 안쪽 빨강이 가려진다. 지우면 돌아온다.
+    Json m = req("layer.mask");
+    m.set("action", Json::string("fromSelection"));
+    CHECK(s->execute(m)["ok"].asBool());
+    CHECK_EQ(alphaAt(60, 60), 0);
+    m.set("action", Json::string("remove"));
+    CHECK(s->execute(m)["ok"].asBool());
+    CHECK_EQ(alphaAt(60, 60), 255);
+
+    // 그룹으로 묶고 풀기.
+    const Json grouped = s->execute(req("layer.group"));
+    CHECK(grouped["ok"].asBool());
+    CHECK_EQ(s->document()->layers().roots().size(), usize{1});
+    CHECK(s->document()->layers().roots()[0]->kind() == LayerKind::Group);
+    Json ug = req("layer.ungroup");
+    ug.set("layer", Json::integer(grouped["result"]["group"]["id"].asInt()));
+    CHECK(s->execute(ug)["ok"].asBool());
+    CHECK(s->document()->layers().roots()[0]->kind() == LayerKind::Raster);
+
+    // 레이어 하나 더 만들고 평탄화 → 루트 1개, 픽셀은 그대로.
+    CHECK(s->execute(req("layer.add"))["ok"].asBool());
+    CHECK_EQ(s->document()->layers().roots().size(), usize{2});
+    CHECK(s->execute(req("layer.flatten"))["ok"].asBool());
+    CHECK_EQ(s->document()->layers().roots().size(), usize{1});
+    CHECK_EQ(alphaAt(60, 60), 255);
+}
+
+MARI_TEST(agent_stroke_accepts_tilt_and_time) {
+    std::unique_ptr<AgentSession> s = sessionWith(mari_ctx, 128, 128);
+    CHECK(s != nullptr);
+    if (s == nullptr) {
+        return;
+    }
+    Json j = req("stroke");
+    Json pts = Json::array();
+    for (int i = 0; i < 5; ++i) {
+        Json p = Json::object();
+        p.set("x", Json::integer(20 + i * 20));
+        p.set("y", Json::integer(64));
+        p.set("p", Json::number(0.5 + 0.1 * i));
+        p.set("tx", Json::number(0.3));
+        p.set("ty", Json::number(-0.2));
+        p.set("t", Json::number(i * 16.0));
+        pts.push(std::move(p));
+    }
+    j.set("points", std::move(pts));
+    j.set("background", Json::string("#00FF00"));
+    const Json drew = s->execute(j);
+    CHECK(drew["ok"].asBool());
+    CHECK(drew["result"]["stamps"].asInt() > 0);
+    // 범위 밖 기울기는 거절한다.
+    Json bad = req("stroke");
+    Json bp = Json::array();
+    Json p = Json::object();
+    p.set("x", Json::integer(10)); p.set("y", Json::integer(10)); p.set("tx", Json::number(2.0));
+    bp.push(std::move(p));
+    bad.set("points", std::move(bp));
+    CHECK(!s->execute(bad)["ok"].asBool());
 }
 
 MARI_TEST_MAIN()

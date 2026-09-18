@@ -244,9 +244,14 @@ Result<Json> layerMove(AgentSession&, const Json&);
 Result<Json> layerDuplicate(AgentSession&, const Json&);
 Result<Json> layerMerge(AgentSession&, const Json&);
 Result<Json> layerSetProps(AgentSession&, const Json&);
+Result<Json> layerFlatten(AgentSession&, const Json&);
+Result<Json> layerMask(AgentSession&, const Json&);
+Result<Json> layerGroup(AgentSession&, const Json&);
+Result<Json> layerUngroup(AgentSession&, const Json&);
 
 Result<Json> stroke(AgentSession&, const Json&);
 Result<Json> fill(AgentSession&, const Json&);
+Result<Json> bucket(AgentSession&, const Json&);
 Result<Json> erase(AgentSession&, const Json&);
 Result<Json> gradient(AgentSession&, const Json&);
 Result<Json> transform(AgentSession&, const Json&);

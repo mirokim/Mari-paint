@@ -1,5 +1,6 @@
 // Mari Paint — 레이어·선택·브러시 연산. 표는 capabilities.cpp 에 있다.
 #include <mari/agent/session.hpp>
+#include <mari/app/layer_commands.hpp>
 
 #include <mari/app/document.hpp>
 #include <mari/core/blend.hpp>
@@ -60,6 +61,22 @@ Json layerNamesOf(const LayerTree& tree, const RoleTags& roles, const Size& canv
 } // namespace
 
 // ── 레이어 ───────────────────────────────────────────────────────────────
+
+/// 공개 API 만으로 부모와 형제 인덱스를 찾는다.
+bool locateLayer(const std::vector<LayerPtr>& list, LayerId parent, LayerId id, LayerId& outParent, int& outIndex) {
+    for (usize i = 0; i < list.size(); ++i) {
+        if (list[i]->id() == id) {
+            outParent = parent;
+            outIndex = static_cast<int>(i);
+            return true;
+        }
+        if (list[i]->kind() == LayerKind::Group &&
+            locateLayer(list[i]->children(), list[i]->id(), id, outParent, outIndex)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Result<Json> layerList(AgentSession& s, const Json&) {
     const Result<app::Document*> d = s.requireDocument();
@@ -267,6 +284,129 @@ Result<Json> layerMerge(AgentSession& s, const Json& req) {
     return Ok(std::move(out));
 }
 
+Result<Json> layerFlatten(AgentSession& s, const Json&) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const Result<LayerId> made = app::flattenAll(*doc);
+    if (!made.ok()) {
+        return made.error();
+    }
+    s.roles().clear();
+    const Size cs = doc->canvasSize();
+    s.noteDirty(Rect{0, 0, cs.width, cs.height});
+    Json out = Json::object();
+    out.set("layer", layerToJson(*doc->layers().find(made.value()), s.roles(), cs));
+    return Ok(std::move(out));
+}
+
+/// 레이어 마스크. action: add(전부 보임) | fromSelection | reveal | hide | apply | remove
+Result<Json> layerMask(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const Result<LayerPtr> l = targetLayer(s, req, *doc);
+    if (!l.ok()) {
+        return l.error();
+    }
+    const std::string action = req["action"].isString() ? req["action"].asString() : std::string("add");
+    const LayerId id = l.value()->id();
+    Result<void> r = Ok();
+    if (action == "add") r = app::addLayerMask(*doc, id, false);
+    else if (action == "fromSelection") r = app::addLayerMask(*doc, id, true);
+    else if (action == "reveal") r = app::paintMaskWithSelection(*doc, id, 255);
+    else if (action == "hide") r = app::paintMaskWithSelection(*doc, id, 0);
+    else if (action == "apply") r = app::applyLayerMask(*doc, id);
+    else if (action == "remove") r = app::removeLayerMask(*doc, id);
+    else return Err("모르는 action 이다: \"" + action + "\" (add|fromSelection|reveal|hide|apply|remove)", ErrorCode::InvalidArgument);
+    if (!r.ok()) {
+        return r.error();
+    }
+    const Size cs = doc->canvasSize();
+    s.noteDirty(Rect{0, 0, cs.width, cs.height});
+    Json out = Json::object();
+    out.set("layer", Json::integer(id));
+    out.set("action", Json::string(action));
+    out.set("hasMask", Json::boolean(l.value()->mask() != nullptr));
+    return Ok(std::move(out));
+}
+
+/// 레이어 하나를 새 그룹으로 감싼다.
+Result<Json> layerGroup(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const Result<LayerPtr> l = targetLayer(s, req, *doc);
+    if (!l.ok()) {
+        return l.error();
+    }
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    if (!locateLayer(doc->layers().roots(), kInvalidLayerId, l.value()->id(), parent, index)) {
+        return Err("레이어 트리가 깨졌다", ErrorCode::Unknown);
+    }
+    const std::string name = req["name"].isString() ? req["name"].asString() : std::string("그룹");
+    const Result<LayerPtr> g = doc->layers().addGroup(name, parent, index + 1);
+    if (!g.ok()) {
+        return g.error();
+    }
+    const Result<void> mv = doc->layers().move(l.value()->id(), g.value()->id(), 0);
+    if (!mv.ok()) {
+        return mv.error();
+    }
+    doc->markDirty();
+    Json out = Json::object();
+    out.set("group", layerToJson(*g.value(), s.roles(), doc->canvasSize()));
+    return Ok(std::move(out));
+}
+
+/// 그룹을 풀어 자식을 제자리에 놓는다.
+Result<Json> layerUngroup(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
+    }
+    app::Document* doc = d.value();
+    const Result<LayerPtr> g = targetLayer(s, req, *doc);
+    if (!g.ok()) {
+        return g.error();
+    }
+    if (g.value()->kind() != LayerKind::Group) {
+        return Err("그룹이 아니다", ErrorCode::InvalidArgument);
+    }
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    if (!locateLayer(doc->layers().roots(), kInvalidLayerId, g.value()->id(), parent, index)) {
+        return Err("레이어 트리가 깨졌다", ErrorCode::Unknown);
+    }
+    const std::vector<LayerPtr> kids = g.value()->children();
+    Json ids = Json::array();
+    for (usize i = 0; i < kids.size(); ++i) {
+        const Result<void> mv = doc->layers().move(kids[i]->id(), parent, index + static_cast<int>(i));
+        if (!mv.ok()) {
+            return mv.error();
+        }
+        ids.push(Json::integer(kids[i]->id()));
+    }
+    const LayerId gone = g.value()->id();
+    const Result<void> rm = doc->layers().remove(gone);
+    if (!rm.ok()) {
+        return rm.error();
+    }
+    s.roles().erase(gone);
+    doc->markDirty();
+    Json out = Json::object();
+    out.set("removed", Json::integer(gone));
+    out.set("children", std::move(ids));
+    return Ok(std::move(out));
+}
+
 Result<Json> layerSetProps(AgentSession& s, const Json& req) {
     const Result<app::Document*> d = s.requireDocument();
     if (!d.ok()) {
@@ -440,6 +580,24 @@ Result<SelectionMask> buildMask(AgentSession& s, const Json& req, app::Document&
         }
         return SelectionMask::fromColorRange(sz, *src.value(), ref.value(),
                                              static_cast<i32>(tol));
+    }
+    if (mode == "wand") {
+        const Result<const TileMap*> src = sourceTiles(s, req, doc);
+        if (!src.ok()) {
+            return src.error();
+        }
+        const Json& at = req["at"];
+        if (!at.isArray() || at.size() != 2) {
+            return Err("wand 는 at: [x, y] 가 필요하다", ErrorCode::InvalidArgument);
+        }
+        const i64 tol = req["tolerance"].asInt(32);
+        const i64 gap = req["gapClose"].asInt(0);
+        if (tol < 0 || tol > 255 || gap < 0 || gap > 64) {
+            return Err("tolerance 는 0..255, gapClose 는 0..64 다", ErrorCode::InvalidArgument);
+        }
+        return SelectionMask::fromFlood(sz, *src.value(), static_cast<i32>(std::floor(at.at(0).asNumber())),
+                                        static_cast<i32>(std::floor(at.at(1).asNumber())),
+                                        static_cast<i32>(tol), static_cast<i32>(gap));
     }
     if (mode == "content") {
         const Result<const TileMap*> src = sourceTiles(s, req, doc);

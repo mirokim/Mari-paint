@@ -165,6 +165,40 @@ struct BrushTexture {
     bool anchoredToCanvas = true;
 };
 
+// ── 색 변화 · 듀얼 브러시 ─────────────────────────────────────────────────
+
+/// 스탬프마다 색을 흔든다(포토샵 Color Dynamics · CSP 색 변화). 전부 0..1, 0 = 꺼짐.
+struct ColorDynamics {
+    /// 전경↔배경 사이를 난수로 오간다(1 = 배경색까지 간다).
+    f32 fgBgJitter = 0.0f;
+    /// 색조 ±(jitter × 180°).
+    f32 hueJitter = 0.0f;
+    /// 채도 ±jitter.
+    f32 saturationJitter = 0.0f;
+    /// 명도 ±jitter.
+    f32 brightnessJitter = 0.0f;
+    /// 순도(채도 편향). -1..1, 0 = 그대로.
+    f32 purity = 0.0f;
+    /// true 면 스탬프마다, false 면 획마다 한 번.
+    bool perTip = true;
+
+    [[nodiscard]] bool active() const {
+        return fgBgJitter > 0.0f || hueJitter > 0.0f || saturationJitter > 0.0f ||
+               brightnessJitter > 0.0f || purity != 0.0f;
+    }
+};
+
+/// 두 번째 팁을 첫 팁 위에 곱해 결(texture)을 만든다(포토샵 Dual Brush).
+struct DualBrush {
+    BrushTip tip;
+    /// 두 번째 팁의 간격(지름 대비). 첫 팁과 따로 논다 — 엔진은 스탬프 위치에서 위상만 달리한다.
+    f32 spacing = 0.25f;
+    f32 scatter = 0.0f;
+    i32 count = 1;
+    /// 두 팁을 합치는 방식. Multiply/Darken/Screen/Add 만 의미가 있다.
+    BlendMode blendMode = BlendMode::Multiply;
+};
+
 // ── 프리셋 ───────────────────────────────────────────────────────────────
 
 /// 브러시 공통 중간 표현. .abr/.sut/.myb/.kpp 가 전부 이걸로 번역된다.
@@ -199,6 +233,18 @@ struct MariBrushPreset {
 
     /// 텍스처. 없으면 비어 있다.
     std::optional<BrushTexture> texture;
+    /// 듀얼 브러시. 없으면 비어 있다.
+    std::optional<DualBrush> dual;
+    /// 색 변화.
+    ColorDynamics colorDynamics;
+    /// 흩뿌림 개수 — 한 위치에 스탬프를 몇 번 찍는가(포토샵 Count). 1 = 한 번.
+    i32 scatterCount = 1;
+    /// 젖은 가장자리(수채처럼 가장자리에 잉크가 고인다).
+    bool wetEdges = false;
+    /// 노이즈 — 부드러운 가장자리에 난수 결을 얹는다. 0..1
+    f32 noise = 0.0f;
+    /// 에어브러시(멈춰 있어도 쌓인다). 엔진이 시간 기반 반복을 하면 쓰고, 아니면 무시한다.
+    bool airbrush = false;
 
     /// 엔진이 이해할 수도 있는 추가 파라미터(키 → 값). 번역기가 확신 없이 넘긴 것들.
     std::vector<std::pair<std::string, f32>> extraParams;

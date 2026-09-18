@@ -48,6 +48,7 @@ class RoleTags {
 public:
     void set(LayerId id, LayerRole role);
     void erase(LayerId id);
+    void clear() { tags_.clear(); }
     /// 태그만 본다(이름 유추는 안 한다). 없으면 None.
     [[nodiscard]] LayerRole tagged(LayerId id) const;
     /// 태그 → 없으면 이름 유추. `source` 에 "tag"/"name"/"" 를 적는다.
