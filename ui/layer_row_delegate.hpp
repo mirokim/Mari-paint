@@ -1,6 +1,6 @@
-// Mari Paint — 레이어 행 그리기: [눈] [썸네일 48×36] [이름 …] [🔒][α]
+// Mari Paint — 레이어 행 그리기: [눈] [썸네일 48×36 | 폴더] [이름 …] [마스크][🔒][α]
 //
-// QListWidget 은 그대로 두고(드래그 재배열이 공짜다) 행 그리기와 눈 클릭만 여기서 맡는다.
+// QTreeWidget 은 그대로 두고(드래그 재배열·그룹 접기가 공짜다) 행 그리기와 눈 클릭만 여기서 맡는다.
 // 데이터 역할: DecorationRole = 썸네일 QPixmap, kVisibleRole/kLockedRole/kAlphaRole = bool.
 #ifndef MARI_UI_LAYER_ROW_DELEGATE_HPP
 #define MARI_UI_LAYER_ROW_DELEGATE_HPP
@@ -15,6 +15,8 @@ constexpr int kVisibleRole = Qt::UserRole + 1;
 constexpr int kLockedRole = Qt::UserRole + 2;
 constexpr int kAlphaRole = Qt::UserRole + 3;
 constexpr int kClipRole = Qt::UserRole + 4;
+constexpr int kGroupRole = Qt::UserRole + 5;
+constexpr int kMaskRole = Qt::UserRole + 6;
 constexpr int kLayerRowHeight = 44;
 
 class LayerRowDelegate final : public QStyledItemDelegate {
@@ -38,7 +40,7 @@ private:
     [[nodiscard]] static QRect thumbRect(const QRect& r);
     [[nodiscard]] static QRect nameRect(const QRect& r);
 
-    QIcon eye_, eyeOff_, lock_, alpha_, clip_;
+    QIcon eye_, eyeOff_, lock_, alpha_, clip_, folder_, mask_;
 };
 
 } // namespace mari::ui

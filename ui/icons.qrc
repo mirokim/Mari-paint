@@ -38,5 +38,11 @@
     <file alias="zoom-in.svg">icons/zoom-in.svg</file>
     <file alias="zoom-out.svg">icons/zoom-out.svg</file>
     <file alias="zoom-reset.svg">icons/zoom-reset.svg</file>
+    <file alias="folder.svg">icons/folder.svg</file>
+    <file alias="folder-plus.svg">icons/folder-plus.svg</file>
+    <file alias="mask.svg">icons/mask.svg</file>
+    <file alias="stack-2.svg">icons/stack-2.svg</file>
+    <file alias="keyboard.svg">icons/keyboard.svg</file>
+    <file alias="app.png">icons/app/mari-paint-256.png</file>
   </qresource>
 </RCC>

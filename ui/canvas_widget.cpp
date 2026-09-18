@@ -849,6 +849,24 @@ void CanvasWidget::bucketFill(const QPointF& logicalPos) {
     Q_EMIT regionFilled();
 }
 
+void CanvasWidget::fillSelection(const QColor& color, bool eraser) {
+    if (doc_ == nullptr || live_ != nullptr) return;
+    const LayerId lid = doc_->layers().activeLayer();
+    const Size cs = doc_->canvasSize();
+    // fillWithMask 는 mask × 선택 을 곱하므로 mask 는 "전체" 로 주면 선택만 남는다.
+    const SelectionMask& sel = doc_->selectionMask();
+    const SelectionMask all = SelectionMask::all(cs);
+    const Color8 c{static_cast<u8>(color.red()), static_cast<u8>(color.green()), static_cast<u8>(color.blue()),
+                   static_cast<u8>(color.alpha())};
+    const Result<u32> r = app::fillWithMask(*doc_, StrokeSource::humanPen(), lid, sel.isAll() ? all : sel, c, eraser);
+    if (!r.ok()) {
+        Q_EMIT strokeRefused(QString::fromStdString(r.message()));
+        return;
+    }
+    scheduleCanvasRepaint(sel.isAll() ? Rect{0, 0, cs.width, cs.height} : sel.bounds(), 0);
+    Q_EMIT regionFilled();
+}
+
 void CanvasWidget::selectAll() {
     if (doc_ == nullptr) return;
     doc_->setSelectionMask(SelectionMask::all(doc_->canvasSize()));

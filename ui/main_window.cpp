@@ -7,6 +7,7 @@
 #include "layer_panel.hpp"
 #include "navigator.hpp"
 #include "popup_palette.hpp"
+#include "shortcut_dialog.hpp"
 #include "tablet_dialog.hpp"
 
 #include <mari/app/layer_commands.hpp>
@@ -90,6 +91,9 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     buildToolbars();
     buildDocks();
     buildStatusBar();
+    // 🔴 메뉴·툴바가 다 만들어진 뒤에 모아야 저장된 단축키 변경이 전부 입혀진다.
+    shortcuts_ = std::make_unique<ShortcutRegistry>();
+    shortcuts_->collect(menuBar(), {{"도구", toolsBar_}});
     heapCheck("after UI build");
 
     thumbTimer_ = new QTimer(this);
@@ -189,17 +193,26 @@ void MainWindow::buildMenus() {
     QMenu* edit = menuBar()->addMenu("편집(&E)");
     undoAction_ = edit->addAction(themedIcon("arrow-back-up", 20), "실행 취소(&U)", QKeySequence::Undo, this, &MainWindow::undo);
     redoAction_ = edit->addAction(themedIcon("arrow-forward-up", 20), "다시 실행(&R)", QKeySequence::Redo, this, &MainWindow::redo);
-    redoAction_->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+    // 포토샵: Ctrl+Shift+Z 다시 실행(Ctrl+Y 도 받는다)
+    redoAction_->setShortcuts({QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z), QKeySequence(Qt::CTRL | Qt::Key_Y)});
     edit->addSeparator();
-    edit->addAction("붓 크게  ]", QKeySequence(Qt::Key_BracketRight), this, [this] { stepBrushSize(+1); });
-    edit->addAction("붓 작게  [", QKeySequence(Qt::Key_BracketLeft), this, [this] { stepBrushSize(-1); });
-    edit->addAction("불투명도 +  Shift+]", QKeySequence(Qt::SHIFT | Qt::Key_BracketRight), this,
-                    [this] { stepOpacity(+1); });
-    edit->addAction("불투명도 −  Shift+[", QKeySequence(Qt::SHIFT | Qt::Key_BracketLeft), this,
-                    [this] { stepOpacity(-1); });
+    edit->addAction("전경색으로 채우기", QKeySequence(Qt::ALT | Qt::Key_Backspace), this,
+                    [this] { canvas_->fillSelection(colorPanel_->foreground(), false); });
+    edit->addAction("배경색으로 채우기", QKeySequence(Qt::CTRL | Qt::Key_Backspace), this,
+                    [this] { canvas_->fillSelection(colorPanel_->background(), false); });
+    edit->addAction("선택 영역 지우기", QKeySequence(Qt::Key_Delete), this,
+                    [this] { canvas_->fillSelection(Qt::black, true); });
     edit->addSeparator();
-    edit->addAction("전경↔배경 교환  X", QKeySequence(Qt::Key_X), this, [this] { colorPanel_->swap(); });
-    edit->addAction("기본 색(검정/흰색)  D", QKeySequence(Qt::Key_D), this, [this] { colorPanel_->resetDefaults(); });
+    edit->addAction("붓 크게", QKeySequence(Qt::Key_BracketRight), this, [this] { stepBrushSize(+1); });
+    edit->addAction("붓 작게", QKeySequence(Qt::Key_BracketLeft), this, [this] { stepBrushSize(-1); });
+    edit->addAction("불투명도 +", QKeySequence(Qt::SHIFT | Qt::Key_BracketRight), this, [this] { stepOpacity(+1); });
+    edit->addAction("불투명도 −", QKeySequence(Qt::SHIFT | Qt::Key_BracketLeft), this, [this] { stepOpacity(-1); });
+    edit->addSeparator();
+    edit->addAction("전경↔배경 교환", QKeySequence(Qt::Key_X), this, [this] { colorPanel_->swap(); });
+    edit->addAction("기본 색(검정/흰색)", QKeySequence(Qt::Key_D), this, [this] { colorPanel_->resetDefaults(); });
+    edit->addSeparator();
+    edit->addAction(themedIcon("keyboard", 20), "단축키 설정...", QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_K),
+                    this, &MainWindow::showShortcutDialog);
 
     QMenu* select = menuBar()->addMenu("선택(&S)");
     select->addAction("전체 선택", QKeySequence::SelectAll, this, [this] { canvas_->selectAll(); });
@@ -210,34 +223,43 @@ void MainWindow::buildMenus() {
     select->addAction("수식키: Shift 더하기 · Alt 빼기 · Shift+Alt 교집합")->setEnabled(false);
 
     QMenu* layer = menuBar()->addMenu("레이어(&L)");
-    layer->addAction("새 레이어", QKeySequence(Qt::Key_Insert), this, [this] { layerPanel_->addLayer(); });
+    // 기본 단축키는 포토샵과 같다(편집 › 단축키 설정 에서 바꾼다).
+    QAction* newLayer = layer->addAction(themedIcon("square-plus", 20), "새 레이어", this, [this] { layerPanel_->addLayer(); });
+    newLayer->setShortcuts({QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N), QKeySequence(Qt::Key_Insert)});
+    layer->addAction(themedIcon("folder-plus", 20), "새 그룹", this, [this] { layerPanel_->addGroup(); });
     layer->addAction(themedIcon("copy", 20), "레이어 복제", QKeySequence(Qt::CTRL | Qt::Key_J), this,
                      [this] { layerPanel_->duplicateLayer(); });
+    layer->addAction(themedIcon("trash", 20), "레이어 삭제", this, [this] { layerPanel_->removeLayer(); });
+    layer->addSeparator();
+    layer->addAction(themedIcon("folder", 20), "그룹으로 묶기", QKeySequence(Qt::CTRL | Qt::Key_G), this,
+                     [this] { layerPanel_->groupActive(); });
+    layer->addAction("그룹 풀기", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), this,
+                     [this] { layerPanel_->ungroupActive(); });
+    layer->addAction(themedIcon("arrow-bar-to-down", 20), "클리핑 마스크 만들기/해제", QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_G),
+                     this, [this] { layerPanel_->toggleClipActive(); });
+    QMenu* mask = layer->addMenu(themedIcon("mask", 20), "레이어 마스크");
+    mask->addAction("전부 보이기", this, [this] { layerPanel_->addMask(false); });
+    mask->addAction("선택 영역 보이기", this, [this] { layerPanel_->addMask(true); });
+    mask->addSeparator();
+    mask->addAction("선택을 마스크에 보이기", this, [this] { layerPanel_->paintMaskWithSelection(true); });
+    mask->addAction("선택을 마스크에서 가리기", this, [this] { layerPanel_->paintMaskWithSelection(false); });
+    mask->addSeparator();
+    mask->addAction("마스크 적용", this, [this] { layerPanel_->applyMask(); });
+    mask->addAction("마스크 삭제", this, [this] { layerPanel_->removeMask(); });
+    layer->addSeparator();
     layer->addAction(themedIcon("arrow-merge", 20), "아래와 병합", QKeySequence(Qt::CTRL | Qt::Key_E), this,
                      &MainWindow::mergeDown);
-    layer->addAction(themedIcon("trash", 20), "레이어 삭제", this, [this] { layerPanel_->removeLayer(); });
-    layer->addAction("위 레이어 선택", QKeySequence(Qt::Key_PageUp), this, [this] {
-        if (app::Document* d = activeDocument()) {
-            const auto& roots = d->layers().roots();
-            for (usize i = 0; i + 1 < roots.size(); ++i)
-                if (roots[i]->id() == d->layers().activeLayer()) {
-                    (void)d->layers().setActiveLayer(roots[i + 1]->id());
-                    layerPanel_->refresh();
-                    break;
-                }
-        }
-    });
-    layer->addAction("아래 레이어 선택", QKeySequence(Qt::Key_PageDown), this, [this] {
-        if (app::Document* d = activeDocument()) {
-            const auto& roots = d->layers().roots();
-            for (usize i = 1; i < roots.size(); ++i)
-                if (roots[i]->id() == d->layers().activeLayer()) {
-                    (void)d->layers().setActiveLayer(roots[i - 1]->id());
-                    layerPanel_->refresh();
-                    break;
-                }
-        }
-    });
+    layer->addAction(themedIcon("stack-2", 20), "이미지 평탄화", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), this,
+                     &MainWindow::flattenImage);
+    layer->addSeparator();
+    layer->addAction(themedIcon("arrow-up", 20), "레이어 위로", QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
+                     [this] { layerPanel_->moveActive(+1); });
+    layer->addAction(themedIcon("arrow-down", 20), "레이어 아래로", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
+                     [this] { layerPanel_->moveActive(-1); });
+    QAction* selUp = layer->addAction("위 레이어 선택", this, [this] { layerPanel_->selectAdjacent(+1); });
+    selUp->setShortcuts({QKeySequence(Qt::ALT | Qt::Key_BracketRight), QKeySequence(Qt::Key_PageUp)});
+    QAction* selDown = layer->addAction("아래 레이어 선택", this, [this] { layerPanel_->selectAdjacent(-1); });
+    selDown->setShortcuts({QKeySequence(Qt::ALT | Qt::Key_BracketLeft), QKeySequence(Qt::Key_PageDown)});
 
     QMenu* view = menuBar()->addMenu("보기(&V)");
     viewActions_.zoomIn = view->addAction(themedIcon("zoom-in", 20), "확대", QKeySequence::ZoomIn, this,
@@ -249,18 +271,18 @@ void MainWindow::buildMenus() {
     viewActions_.fit = view->addAction(themedIcon("arrows-maximize", 20), "창에 맞춤", QKeySequence(Qt::CTRL | Qt::Key_0),
                                        this, [this] { canvas_->fitToView(); });
     view->addSeparator();
-    viewActions_.rotL = view->addAction(themedIcon("rotate", 20), "왼쪽으로 회전", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft),
+    viewActions_.rotL = view->addAction(themedIcon("rotate", 20), "왼쪽으로 회전", QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_BracketLeft),
                                         this, [this] { canvas_->rotateBy(-15.0); });
     viewActions_.rotR = view->addAction(themedIcon("rotate-clockwise", 20), "오른쪽으로 회전",
-                                        QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this, [this] { canvas_->rotateBy(15.0); });
+                                        QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_BracketRight), this, [this] { canvas_->rotateBy(15.0); });
     view->addAction("회전 초기화", QKeySequence(Qt::Key_5), this, [this] { canvas_->resetRotation(); });
-    viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::Key_M), this,
+    viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::ALT | Qt::Key_M), this,
                                           [this] { canvas_->toggleMirror(); });
     view->addSeparator();
     viewActions_.panels = view->addAction(themedIcon("layout-sidebar-right-collapse", 20), "패널 숨김/표시",
                                           QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
-    view->addAction("캔버스 전용 모드", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F), this,
-                    &MainWindow::toggleCanvasOnly);
+    QAction* canvasOnly = view->addAction("캔버스 전용 모드", this, &MainWindow::toggleCanvasOnly);
+    canvasOnly->setShortcuts({QKeySequence(Qt::Key_F), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F)});
     view->addSeparator();
     view->addAction(themedIcon("settings", 20), "태블릿 — 압력 곡선 · 테스터...", this, &MainWindow::showTabletDialog);
     debugStatusAction_ = view->addAction("진단 상태 표시(지연·저널)");
@@ -299,8 +321,9 @@ void MainWindow::buildToolbars() {
     toolsBar_->addSeparator();
     addTool("bucket-droplet", "채우기", "페인트통 (G) — 클릭한 곳과 이어진 영역을 전경색으로", Qt::Key_G, Tool::Fill);
     toolsBar_->addSeparator();
-    addTool("square-dashed", "사각 선택", "사각형 선택 (M 키는 미러라 R) — Shift 더하기 · Alt 빼기 · Shift+Alt 교집합", Qt::Key_R, Tool::SelectRect);
-    addTool("circle-dashed", "타원 선택", "타원 선택 (O)", Qt::Key_O, Tool::SelectEllipse);
+    addTool("square-dashed", "사각 선택", "사각형 선택 (M) — Shift 더하기 · Alt 빼기 · Shift+Alt 교집합", Qt::Key_M, Tool::SelectRect);
+    addTool("circle-dashed", "타원 선택", "타원 선택 (Shift+M)", Qt::Key_O, Tool::SelectEllipse)
+        ->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_M));
     addTool("lasso", "올가미", "올가미 선택 (L)", Qt::Key_L, Tool::SelectLasso);
     addTool("wand", "마술봉", "마술봉 (W) — 이어진 같은 색 영역", Qt::Key_W, Tool::SelectWand);
 
@@ -674,6 +697,20 @@ void MainWindow::mergeDown() {
     canvas_->invalidateCanvas();
     thumbTimer_->start();
     refreshTitle();
+}
+
+void MainWindow::flattenImage() {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr || canvas_->strokeActive()) return;
+    layerPanel_->flattenAll();
+    canvas_->invalidateCanvas();
+    thumbTimer_->start();
+    refreshTitle();
+}
+
+void MainWindow::showShortcutDialog() {
+    ShortcutDialog dlg(*shortcuts_, this);
+    dlg.exec();
 }
 
 void MainWindow::togglePanels() {

@@ -201,6 +201,13 @@ private:
     void applySelection(SelectionMask mask, Qt::KeyboardModifiers mods);
     void finishSelectionDrag(const QPointF& logicalPos, Qt::KeyboardModifiers mods);
     void bucketFill(const QPointF& logicalPos);
+
+public:
+    /// 현재 선택 영역(없으면 캔버스 전체)을 color 로 채우거나(eraser=false) 지운다(eraser=true).
+    /// 포토샵 Alt+Backspace / Ctrl+Backspace / Delete.
+    void fillSelection(const QColor& color, bool eraser);
+
+private:
     void invalidateView();  ///< 뷰가 바뀌었다 — 캐시 전체를 버린다
 
     app::Document* doc_ = nullptr;

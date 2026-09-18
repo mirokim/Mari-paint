@@ -14,6 +14,7 @@
 #include <QColor>
 #include <QMainWindow>
 
+#include <memory>
 #include <vector>
 
 class QAction;
@@ -34,6 +35,7 @@ class ColorPanel;
 class LayerPanel;
 class Navigator;
 class PopupPalette;
+class ShortcutRegistry;
 enum class Tool;
 
 class MainWindow final : public QMainWindow {
@@ -72,6 +74,8 @@ private:
     void showTabletDialog();
     void showPalette(const QPoint& globalPos);
     void mergeDown();
+    void flattenImage();
+    void showShortcutDialog();
     void refreshStatus();
     void refreshTitle();
 
@@ -117,6 +121,7 @@ private:
     } viewActions_;
     bool syncingSize_ = false;
     QTimer* thumbTimer_ = nullptr;
+    std::unique_ptr<ShortcutRegistry> shortcuts_;
 
     QLabel* statusToolIcon_ = nullptr;
     QString statusToolIconName_;

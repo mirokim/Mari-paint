@@ -21,6 +21,18 @@ namespace mari::app {
 [[nodiscard]] Result<u32> fillWithMask(Document& doc, const StrokeSource& src, LayerId layerId,
                                        const SelectionMask& mask, Color8 color, bool eraser);
 
+/// 보이는 레이어 전부를 새 래스터 하나로 평탄화하고 나머지를 지운다(실행취소 하나).
+[[nodiscard]] Result<LayerId> flattenAll(Document& doc);
+
+/// 레이어 마스크. `fromSelection` 이면 현재 선택을 마스크로(선택 밖 = 가림), 아니면 전부 보임(255).
+[[nodiscard]] Result<void> addLayerMask(Document& doc, LayerId id, bool fromSelection);
+/// 마스크를 픽셀 알파에 구워 넣고 마스크를 없앤다.
+[[nodiscard]] Result<void> applyLayerMask(Document& doc, LayerId id);
+/// 마스크를 버린다.
+[[nodiscard]] Result<void> removeLayerMask(Document& doc, LayerId id);
+/// 현재 선택을 마스크에 쓴다(value: 255 보임 / 0 가림). 마스크가 없으면 만든다.
+[[nodiscard]] Result<void> paintMaskWithSelection(Document& doc, LayerId id, u8 value);
+
 } // namespace mari::app
 
 #endif // MARI_APP_LAYER_COMMANDS_HPP

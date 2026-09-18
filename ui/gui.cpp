@@ -7,6 +7,7 @@
 #include <mari/record/sigan_recorder.hpp>
 
 #include <QApplication>
+#include <QIcon>
 #include <QPalette>
 #include <QDir>
 #include <QStandardPaths>
@@ -120,6 +121,7 @@ QStatusBar::item { border: none; }
 )");
     QApplication::setApplicationName("Mari Paint");
     QApplication::setOrganizationName("Mari");
+    QApplication::setWindowIcon(QIcon(":/icons/app.png"));
 
     // 🔴 기록 배선(docs/06). CLI 와 같은 공장을 같은 순서로 꽂는다 — 공장이 앱보다 오래 산다.
     //    사람 획도 여기서 열린 저널에 남는다. 저널은 로컬 앱 데이터 아래에 둔다.

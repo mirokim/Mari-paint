@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mari::app {
 
@@ -68,6 +69,98 @@ private:
     int index_;
     std::unique_ptr<TileSnapshotCommand> pixels_;
 };
+
+/// 여러 명령을 하나로. undo 는 역순.
+class CompoundCommand final : public UndoCommand {
+public:
+    explicit CompoundCommand(std::string text) : text_(std::move(text)) {}
+    void add(UndoCommandPtr c) { cmds_.push_back(std::move(c)); }
+    [[nodiscard]] bool empty() const { return cmds_.empty(); }
+    [[nodiscard]] const std::string& text() const override { return text_; }
+    [[nodiscard]] Result<void> undo() override {
+        for (auto it = cmds_.rbegin(); it != cmds_.rend(); ++it) {
+            const Result<void> r = (*it)->undo();
+            if (!r.ok()) return r;
+        }
+        return Ok();
+    }
+    [[nodiscard]] Result<void> redo() override {
+        for (auto& c : cmds_) {
+            const Result<void> r = c->redo();
+            if (!r.ok()) return r;
+        }
+        return Ok();
+    }
+    void affectedTiles(DirtyTiles& out) const override {
+        for (const auto& c : cmds_) c->affectedTiles(out);
+    }
+
+private:
+    std::string text_;
+    std::vector<UndoCommandPtr> cmds_;
+};
+
+/// undo/redo 를 뒤집는다(레이어 "추가" = 분리의 반대).
+class InverseCommand final : public UndoCommand {
+public:
+    explicit InverseCommand(UndoCommandPtr inner) : inner_(std::move(inner)) {}
+    [[nodiscard]] const std::string& text() const override { return inner_->text(); }
+    [[nodiscard]] Result<void> undo() override { return inner_->redo(); }
+    [[nodiscard]] Result<void> redo() override { return inner_->undo(); }
+    void affectedTiles(DirtyTiles& out) const override { inner_->affectedTiles(out); }
+
+private:
+    UndoCommandPtr inner_;
+};
+
+/// 마스크 교체 명령(before/after 타일맵 포인터 — COW 라 값싸다).
+class MaskSwapCommand final : public UndoCommand {
+public:
+    MaskSwapCommand(std::string text, LayerPtr layer, TileMapPtr before, TileMapPtr after)
+        : text_(std::move(text)), layer_(std::move(layer)), before_(std::move(before)), after_(std::move(after)) {}
+    [[nodiscard]] const std::string& text() const override { return text_; }
+    [[nodiscard]] Result<void> undo() override { layer_->setMask(before_); return Ok(); }
+    [[nodiscard]] Result<void> redo() override { layer_->setMask(after_); return Ok(); }
+    void affectedTiles(DirtyTiles& out) const override {
+        if (const TileMap* t = layer_->tiles()) t->collectTiles(t->bounds(), out);
+    }
+
+private:
+    std::string text_;
+    LayerPtr layer_;
+    TileMapPtr before_, after_;
+};
+
+/// 트리를 깊이 우선으로 훑는다(부모 → 자식).
+void collectAll(const std::vector<LayerPtr>& list, std::vector<LayerPtr>& out) {
+    for (const LayerPtr& l : list) {
+        out.push_back(l);
+        if (l->kind() == LayerKind::Group) collectAll(l->children(), out);
+    }
+}
+
+/// 마스크 타일맵을 만든다. 🔴 규약: 없는 타일 = 0 = 가림. 그래서 "전부 보임" 도 타일을 다 만든다.
+Result<TileMapPtr> makeMask(const Document& doc, bool fromSelection) {
+    Result<TileMapPtr> m = makeTileMap(PixelFormat::Gray8);
+    if (!m.ok()) return m;
+    const Size cs = doc.canvasSize();
+    const SelectionMask& sel = doc.selectionMask();
+    for (i32 ty = 0; ty <= tileIndexFor(cs.height - 1); ++ty) {
+        for (i32 tx = 0; tx <= tileIndexFor(cs.width - 1); ++tx) {
+            Result<TilePtr> t = m.value()->writable(TileCoord{tx, ty});
+            if (!t.ok()) return t.error();
+            u8* p = t.value()->mutablePixels();
+            for (i32 y = 0; y < kTileSize; ++y) {
+                for (i32 x = 0; x < kTileSize; ++x) {
+                    const i32 cx = tileOrigin(tx) + x, cy = tileOrigin(ty) + y;
+                    p[static_cast<usize>(y) * t.value()->stride() + static_cast<usize>(x)] =
+                        fromSelection ? sel.valueAt(cx, cy) : u8{255};
+                }
+            }
+        }
+    }
+    return m;
+}
 
 } // namespace
 
@@ -181,6 +274,132 @@ Result<u32> fillWithMask(Document& doc, const StrokeSource& src, LayerId layerId
         return rec.error();
     }
     return Ok(changed);
+}
+
+Result<LayerId> flattenAll(Document& doc) {
+    LayerTree& tree = doc.layers();
+    const Size cs = doc.canvasSize();
+    // 1. 합성 결과를 먼저 만든다(구조를 바꾸기 전에).
+    std::vector<u8> px(static_cast<usize>(cs.width) * static_cast<usize>(cs.height) * 4u);
+    const Result<void> f = tree.flatten(Rect{0, 0, cs.width, cs.height}, px.data(), static_cast<usize>(cs.width) * 4u);
+    if (!f.ok()) return f.error();
+    struct Pos { LayerPtr layer; int index; };
+    std::vector<Pos> roots;
+    for (usize i = 0; i < tree.roots().size(); ++i) roots.push_back({tree.roots()[i], static_cast<int>(i)});
+
+    auto compound = std::make_unique<CompoundCommand>("평탄화");
+    // 2. 루트를 위에서부터 떼어 낸다(자식은 같이 딸려 간다). 실행취소는 역순이라 제자리에 돌아온다.
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
+        const Result<void> r = tree.remove(it->layer->id());
+        if (!r.ok()) return r.error();
+        compound->add(std::make_unique<DetachLayerCommand>("평탄화", tree, it->layer, kInvalidLayerId, it->index, nullptr));
+    }
+    // 3. 새 레이어에 결과를 쓴다.
+    const Result<LayerPtr> made = tree.addRaster("평탄화");
+    if (!made.ok()) return made.error();
+    ora::Image8 img;
+    img.width = cs.width;
+    img.height = cs.height;
+    img.pixels = std::move(px);
+    const Result<void> w = ora::writeRegion(*made.value()->tiles(), Rect{0, 0, cs.width, cs.height}, img);
+    if (!w.ok()) return w.error();
+    compound->add(std::make_unique<InverseCommand>(
+        std::make_unique<DetachLayerCommand>("평탄화", tree, made.value(), kInvalidLayerId, 0, nullptr)));
+    (void)tree.setActiveLayer(made.value()->id());
+    doc.undoStack().push(std::move(compound));
+    doc.markDirty();
+    return Ok(made.value()->id());
+}
+
+Result<void> addLayerMask(Document& doc, LayerId id, bool fromSelection) {
+    const LayerPtr l = doc.layers().find(id);
+    if (!l || l->kind() != LayerKind::Raster) return Err("래스터 레이어에만 마스크를 붙인다", ErrorCode::InvalidArgument);
+    Result<TileMapPtr> m = makeMask(doc, fromSelection && !doc.selectionMask().isAll());
+    if (!m.ok()) return m.error();
+    TileMapPtr before = l->mask() ? l->mask()->snapshot() : nullptr;
+    l->setMask(m.value());
+    doc.undoStack().push(std::make_unique<MaskSwapCommand>("마스크 추가", l, before, m.value()));
+    doc.markDirty();
+    return Ok();
+}
+
+Result<void> removeLayerMask(Document& doc, LayerId id) {
+    const LayerPtr l = doc.layers().find(id);
+    if (!l || l->mask() == nullptr) return Err("마스크가 없다", ErrorCode::NotFound);
+    TileMapPtr before = l->mask()->snapshot();
+    l->setMask(nullptr);
+    doc.undoStack().push(std::make_unique<MaskSwapCommand>("마스크 삭제", l, before, nullptr));
+    doc.markDirty();
+    return Ok();
+}
+
+Result<void> applyLayerMask(Document& doc, LayerId id) {
+    const LayerPtr l = doc.layers().find(id);
+    if (!l || l->mask() == nullptr || l->tiles() == nullptr) return Err("마스크가 없다", ErrorCode::NotFound);
+    const TileMap* mask = l->mask();
+    TileMap* tiles = l->tiles();
+    DirtyTiles coords;
+    tiles->collectTiles(tiles->bounds(), coords);
+    auto pixels = TileSnapshotCommand::begin("마스크 적용", tiles);
+    pixels->captureBefore(coords);
+    for (const TileCoord& c : coords) {
+        Result<TilePtr> t = tiles->writable(c);
+        if (!t.ok()) return t.error();
+        const ConstTilePtr mt = mask->at(c);
+        u8* p = t.value()->mutablePixels();
+        for (i32 y = 0; y < kTileSize; ++y) {
+            for (i32 x = 0; x < kTileSize; ++x) {
+                const u32 mv = mt ? mt->pixels()[static_cast<usize>(y) * mt->stride() + static_cast<usize>(x)] : 0u;
+                u8* q = p + static_cast<usize>(y) * t.value()->stride() + static_cast<usize>(x) * 4u;
+                q[3] = static_cast<u8>((q[3] * mv + 127u) / 255u);
+            }
+        }
+    }
+    pixels->captureAfter(coords);
+    TileMapPtr before = mask->snapshot();
+    l->setMask(nullptr);
+    auto compound = std::make_unique<CompoundCommand>("마스크 적용");
+    compound->add(std::move(pixels));
+    compound->add(std::make_unique<MaskSwapCommand>("마스크 적용", l, before, nullptr));
+    doc.undoStack().push(std::move(compound));
+    doc.markDirty();
+    return Ok();
+}
+
+Result<void> paintMaskWithSelection(Document& doc, LayerId id, u8 value) {
+    const LayerPtr l = doc.layers().find(id);
+    if (!l || l->kind() != LayerKind::Raster) return Err("래스터 레이어가 아니다", ErrorCode::InvalidArgument);
+    TileMapPtr before = l->mask() ? l->mask()->snapshot() : nullptr;
+    TileMapPtr after;
+    if (before) {
+        after = before->snapshot();
+    } else {
+        Result<TileMapPtr> m = makeMask(doc, false);
+        if (!m.ok()) return m.error();
+        after = m.value();
+    }
+    const SelectionMask& sel = doc.selectionMask();
+    const Size cs = doc.canvasSize();
+    for (i32 ty = 0; ty <= tileIndexFor(cs.height - 1); ++ty) {
+        for (i32 tx = 0; tx <= tileIndexFor(cs.width - 1); ++tx) {
+            Result<TilePtr> t = after->writable(TileCoord{tx, ty});
+            if (!t.ok()) return t.error();
+            u8* p = t.value()->mutablePixels();
+            for (i32 y = 0; y < kTileSize; ++y) {
+                for (i32 x = 0; x < kTileSize; ++x) {
+                    const u32 sv = sel.valueAt(tileOrigin(tx) + x, tileOrigin(ty) + y);
+                    if (sv == 0) continue;
+                    u8& q = p[static_cast<usize>(y) * t.value()->stride() + static_cast<usize>(x)];
+                    q = static_cast<u8>((value * sv + q * (255u - sv) + 127u) / 255u);
+                }
+            }
+        }
+    }
+    l->setMask(after);
+    doc.undoStack().push(std::make_unique<MaskSwapCommand>(value ? "마스크: 선택 보이기" : "마스크: 선택 가리기",
+                                                           l, before, after));
+    doc.markDirty();
+    return Ok();
 }
 
 } // namespace mari::app

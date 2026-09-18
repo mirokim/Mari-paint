@@ -23,7 +23,9 @@ LayerRowDelegate::LayerRowDelegate(QObject* parent)
       eyeOff_(themedIcon("eye-off", kEye)),
       lock_(themedIcon("lock", kMark)),
       alpha_(themedIcon("square-half", kMark)),
-      clip_(themedIcon("arrow-bar-to-down", kMark)) {}
+      clip_(themedIcon("arrow-bar-to-down", kMark)),
+      folder_(themedIcon("folder", 22)),
+      mask_(themedIcon("mask", kMark)) {}
 
 QRect LayerRowDelegate::eyeRect(const QRect& r) {
     return QRect(r.left() + 6, r.center().y() - kEye / 2, kEye, kEye);
@@ -32,7 +34,7 @@ QRect LayerRowDelegate::thumbRect(const QRect& r) {
     return QRect(r.left() + 30, r.center().y() - kThumbH / 2, kThumbW, kThumbH);
 }
 QRect LayerRowDelegate::nameRect(const QRect& r) {
-    return QRect(r.left() + 86, r.top(), r.width() - 86 - 44, r.height());
+    return QRect(r.left() + 86, r.top(), r.width() - 86 - 62, r.height());
 }
 
 QSize LayerRowDelegate::sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const {
@@ -54,12 +56,17 @@ void LayerRowDelegate::paint(QPainter* p, const QStyleOptionViewItem& o, const Q
         clip_.paint(p, QRect(tr.left(), r.center().y() - kMark / 2, kMark, kMark));
         tr.translate(kMark + 2, 0);
     }
-    const QPixmap thumb = i.data(Qt::DecorationRole).value<QPixmap>();
-    if (!thumb.isNull()) {
-        p->drawPixmap(tr, thumb);
+    if (i.data(kGroupRole).toBool()) {
+        // 그룹은 썸네일 대신 폴더 아이콘(포토샵·크리타 관례).
+        folder_.paint(p, tr, Qt::AlignCenter);
+    } else {
+        const QPixmap thumb = i.data(Qt::DecorationRole).value<QPixmap>();
+        if (!thumb.isNull()) {
+            p->drawPixmap(tr, thumb);
+        }
+        p->setPen(QColor(0, 0, 0, 150));
+        p->drawRect(tr.adjusted(0, 0, -1, -1));
     }
-    p->setPen(QColor(0, 0, 0, 150));
-    p->drawRect(tr.adjusted(0, 0, -1, -1));
 
     p->setPen(sel ? Qt::white : QColor(0xdc, 0xdc, 0xdc));
     const QString name = o.fontMetrics.elidedText(i.data(Qt::DisplayRole).toString(), Qt::ElideRight,
@@ -73,6 +80,10 @@ void LayerRowDelegate::paint(QPainter* p, const QStyleOptionViewItem& o, const Q
     }
     if (i.data(kLockedRole).toBool()) {
         lock_.paint(p, QRect(x, r.center().y() - kMark / 2, kMark, kMark));
+        x -= kMark + 4;
+    }
+    if (i.data(kMaskRole).toBool()) {
+        mask_.paint(p, QRect(x, r.center().y() - kMark / 2, kMark, kMark));
     }
 }
 

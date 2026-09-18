@@ -8,23 +8,47 @@
 #include <mari/core/layer_ops.hpp>
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QComboBox>
+#include <QDropEvent>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
-#include <QAction>
-#include <QListWidget>
 #include <QMenu>
 #include <QPainter>
 #include <QPixmap>
 #include <QSlider>
 #include <QSpinBox>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <functional>
 #include <vector>
 
 namespace mari::ui {
+
+/// 드롭 뒤처리를 알려 주는 트리. 래스터 레이어 "위에" 떨어뜨리는 건(=자식으로) 막는다.
+class LayerTreeWidget final : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+    std::function<void()> onDropped;
+
+protected:
+    void dropEvent(QDropEvent* e) override {
+        if (dropIndicatorPosition() == QAbstractItemView::OnItem) {
+            QTreeWidgetItem* target = itemAt(e->position().toPoint());
+            if (target == nullptr || !target->data(0, kGroupRole).toBool()) {
+                e->ignore();
+                return;
+            }
+        }
+        QTreeWidget::dropEvent(e);
+        if (onDropped) onDropped();
+    }
+};
 
 namespace {
 
@@ -107,58 +131,31 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
     opRow->addWidget(opacitySpin_);
     layout->addLayout(opRow);
 
-    list_ = new QListWidget(this);
-    list_->setDragDropMode(QAbstractItemView::InternalMove);
-    list_->setDefaultDropAction(Qt::MoveAction);
-    list_->setSelectionMode(QAbstractItemView::SingleSelection);
-    list_->setUniformItemSizes(true);
-    list_->setFrameShape(QFrame::NoFrame);
-    list_->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(list_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        if (doc_ == nullptr) return;
-        if (QListWidgetItem* item = list_->itemAt(pos)) list_->setCurrentItem(item);
-        const LayerPtr l = activeLayer();
-        if (!l) return;
-        QMenu menu(this);
-        menu.addAction(themedIcon("square-plus", 16), "새 레이어", [this] { addLayer(); });
-        menu.addAction(themedIcon("copy", 16), "복제", [this] { duplicateLayer(); });
-        menu.addAction(themedIcon("arrow-merge", 16), "아래와 병합", [this] { Q_EMIT mergeDownRequested(); });
-        menu.addSeparator();
-        QAction* vis = menu.addAction(l->visible() ? "숨기기" : "보이기");
-        connect(vis, &QAction::triggered, this, [this, l] {
-            l->setVisible(!l->visible());
-            refresh();
-            markDirty();
-        });
-        QAction* lock = menu.addAction(themedIcon("lock", 16), "잠금");
-        lock->setCheckable(true);
-        lock->setChecked(l->locked());
-        connect(lock, &QAction::toggled, this, [this, l](bool on) { l->setLocked(on); refresh(); });
-        QAction* clipAct = menu.addAction(themedIcon("arrow-bar-to-down", 16), "아래 레이어에서 클리핑");
-        clipAct->setCheckable(true);
-        clipAct->setChecked(l->clipToBelow());
-        connect(clipAct, &QAction::toggled, this, [this, l](bool on) { l->setClipToBelow(on); refresh(); markDirty(); });
-        QAction* alpha = menu.addAction(themedIcon("square-half", 16), "알파 잠금");
-        alpha->setCheckable(true);
-        alpha->setChecked(l->alphaLocked());
-        connect(alpha, &QAction::toggled, this, [this, l](bool on) { l->setAlphaLocked(on); refresh(); });
-        menu.addSeparator();
-        menu.addAction("이름 바꾸기", [this] { if (QListWidgetItem* it = list_->currentItem()) list_->editItem(it); });
-        menu.addAction(themedIcon("trash", 16), "삭제", [this] { removeLayer(); });
-        menu.exec(list_->viewport()->mapToGlobal(pos));
-    });
-    auto* delegate = new LayerRowDelegate(list_);
-    list_->setItemDelegate(delegate);
-    layout->addWidget(list_, 1);
+    tree_ = new LayerTreeWidget(this);
+    tree_->setColumnCount(1);
+    tree_->setHeaderHidden(true);
+    tree_->setIndentation(14);
+    tree_->setRootIsDecorated(true);
+    tree_->setDragDropMode(QAbstractItemView::InternalMove);
+    tree_->setDefaultDropAction(Qt::MoveAction);
+    tree_->setDropIndicatorShown(true);
+    tree_->setSelectionMode(QAbstractItemView::SingleSelection);
+    tree_->setUniformRowHeights(true);
+    tree_->setFrameShape(QFrame::NoFrame);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    tree_->onDropped = [this] { onDropped(); };
+    connect(tree_, &QTreeWidget::customContextMenuRequested, this, &LayerPanel::showContextMenu);
+    auto* delegate = new LayerRowDelegate(tree_);
+    tree_->setItemDelegate(delegate);
+    layout->addWidget(tree_, 1);
     connect(delegate, &LayerRowDelegate::visibilityToggled, this, [this](const QModelIndex& idx) {
         if (doc_ == nullptr) return;
-        QListWidgetItem* item = list_->item(idx.row());
+        QTreeWidgetItem* item = tree_->itemFromIndex(idx);
         if (item == nullptr) return;
-        const auto id = static_cast<LayerId>(item->data(kLayerIdRole).toULongLong());
-        if (const LayerPtr l = doc_->layers().find(id)) {
+        if (const LayerPtr l = doc_->layers().find(idOf(item))) {
             l->setVisible(!l->visible());
             busy_ = true;
-            item->setData(kVisibleRole, l->visible());
+            item->setData(0, kVisibleRole, l->visible());
             busy_ = false;
             markDirty();
         }
@@ -172,19 +169,21 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
         buttons->addWidget(b);
         return b;
     };
-    btn("square-plus", "새 레이어 (Insert)", [this] { addLayer(); });
-    btn("copy", "레이어 복제", [this] { duplicateLayer(); });
+    btn("square-plus", "새 레이어 (Ctrl+Shift+N)", [this] { addLayer(); });
+    btn("folder-plus", "새 그룹 (Ctrl+G 는 활성 레이어를 그룹으로)", [this] { addGroup(); });
+    btn("copy", "레이어 복제 (Ctrl+J)", [this] { duplicateLayer(); });
     btn("arrow-merge", "아래와 병합 (Ctrl+E)", [this] { Q_EMIT mergeDownRequested(); });
+    btn("mask", "레이어 마스크 추가 (선택이 있으면 선택에서)", [this] { addMask(true); });
     buttons->addSpacing(6);
-    btn("arrow-up", "위로", [this] { moveActive(+1); });
-    btn("arrow-down", "아래로", [this] { moveActive(-1); });
+    btn("arrow-up", "위로 (Ctrl+])", [this] { moveActive(+1); });
+    btn("arrow-down", "아래로 (Ctrl+[)", [this] { moveActive(-1); });
     buttons->addStretch(1);
     btn("trash", "레이어 삭제", [this] { removeLayer(); });
     layout->addLayout(buttons);
 
-    connect(list_, &QListWidget::currentRowChanged, this, &LayerPanel::onRowChanged);
-    connect(list_, &QListWidget::itemChanged, this, &LayerPanel::onItemChanged);
-    connect(list_->model(), &QAbstractItemModel::rowsMoved, this, [this] { onRowsMoved(); });
+    connect(tree_, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem* cur, QTreeWidgetItem*) { onCurrentChanged(cur); });
+    connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* it, int) { onItemChanged(it); });
     connect(blend_, &QComboBox::currentIndexChanged, this, [this](int i) {
         if (busy_ || i < 0) return;
         if (const LayerPtr l = activeLayer()) {
@@ -206,40 +205,77 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
         if (busy_) return;
         opacity_->setValue(v);
     });
-    connect(lock_, &QToolButton::toggled, this, [this](bool on) {
-        if (busy_) return;
-        if (const LayerPtr l = activeLayer()) {
-            l->setLocked(on);
-            if (QListWidgetItem* item = list_->currentItem()) {
-                busy_ = true;
-                item->setData(kLockedRole, on);
-                busy_ = false;
+    const auto flag = [this](QToolButton* b, int role, auto setter, bool repaint) {
+        connect(b, &QToolButton::toggled, this, [this, role, setter, repaint](bool on) {
+            if (busy_) return;
+            if (const LayerPtr l = activeLayer()) {
+                setter(*l, on);
+                if (QTreeWidgetItem* item = tree_->currentItem()) {
+                    busy_ = true;
+                    item->setData(0, role, on);
+                    busy_ = false;
+                }
+                if (repaint) markDirty();
             }
-        }
+        });
+    };
+    flag(lock_, kLockedRole, [](Layer& l, bool on) { l.setLocked(on); }, false);
+    flag(alphaLock_, kAlphaRole, [](Layer& l, bool on) { l.setAlphaLocked(on); }, false);
+    flag(clip_, kClipRole, [](Layer& l, bool on) { l.setClipToBelow(on); }, true);
+}
+
+void LayerPanel::showContextMenu(const QPoint& pos) {
+    if (doc_ == nullptr) return;
+    if (QTreeWidgetItem* item = tree_->itemAt(pos)) tree_->setCurrentItem(item);
+    const LayerPtr l = activeLayer();
+    if (!l) return;
+    const bool raster = l->kind() == LayerKind::Raster;
+    QMenu menu(this);
+    menu.addAction(themedIcon("square-plus", 16), "새 레이어", [this] { addLayer(); });
+    menu.addAction(themedIcon("folder-plus", 16), "새 그룹", [this] { addGroup(); });
+    menu.addAction(themedIcon("folder", 16), "그룹으로 묶기", [this] { groupActive(); });
+    if (l->kind() == LayerKind::Group) menu.addAction("그룹 풀기", [this] { ungroupActive(); });
+    menu.addAction(themedIcon("copy", 16), "복제", [this] { duplicateLayer(); });
+    menu.addAction(themedIcon("arrow-merge", 16), "아래와 병합", [this] { Q_EMIT mergeDownRequested(); })
+        ->setEnabled(raster);
+    menu.addSeparator();
+    QMenu* mask = menu.addMenu(themedIcon("mask", 16), "레이어 마스크");
+    mask->setEnabled(raster);
+    const bool hasMask = l->mask() != nullptr;
+    const bool hasSel = !doc_->selectionMask().isAll();
+    mask->addAction("전부 보이기", [this] { addMask(false); });
+    mask->addAction("선택 영역 보이기", [this] { addMask(true); })->setEnabled(hasSel);
+    mask->addSeparator();
+    mask->addAction("선택을 마스크에 보이기", [this] { paintMaskWithSelection(true); })->setEnabled(hasSel);
+    mask->addAction("선택을 마스크에서 가리기", [this] { paintMaskWithSelection(false); })->setEnabled(hasSel);
+    mask->addSeparator();
+    mask->addAction("마스크 적용", [this] { applyMask(); })->setEnabled(hasMask);
+    mask->addAction("마스크 삭제", [this] { removeMask(); })->setEnabled(hasMask);
+    menu.addSeparator();
+    QAction* vis = menu.addAction(l->visible() ? "숨기기" : "보이기");
+    connect(vis, &QAction::triggered, this, [this, l] {
+        l->setVisible(!l->visible());
+        refresh();
+        markDirty();
     });
-    connect(clip_, &QToolButton::toggled, this, [this](bool on) {
-        if (busy_) return;
-        if (const LayerPtr l = activeLayer()) {
-            l->setClipToBelow(on);
-            if (QListWidgetItem* item = list_->currentItem()) {
-                busy_ = true;
-                item->setData(kClipRole, on);
-                busy_ = false;
-            }
-            markDirty();
-        }
-    });
-    connect(alphaLock_, &QToolButton::toggled, this, [this](bool on) {
-        if (busy_) return;
-        if (const LayerPtr l = activeLayer()) {
-            l->setAlphaLocked(on);
-            if (QListWidgetItem* item = list_->currentItem()) {
-                busy_ = true;
-                item->setData(kAlphaRole, on);
-                busy_ = false;
-            }
-        }
-    });
+    QAction* lock = menu.addAction(themedIcon("lock", 16), "잠금");
+    lock->setCheckable(true);
+    lock->setChecked(l->locked());
+    connect(lock, &QAction::toggled, this, [this, l](bool on) { l->setLocked(on); refresh(); });
+    QAction* clipAct = menu.addAction(themedIcon("arrow-bar-to-down", 16), "아래 레이어에서 클리핑");
+    clipAct->setCheckable(true);
+    clipAct->setChecked(l->clipToBelow());
+    connect(clipAct, &QAction::toggled, this, [this, l](bool on) { l->setClipToBelow(on); refresh(); markDirty(); });
+    QAction* alpha = menu.addAction(themedIcon("square-half", 16), "알파 잠금");
+    alpha->setCheckable(true);
+    alpha->setChecked(l->alphaLocked());
+    alpha->setEnabled(raster);
+    connect(alpha, &QAction::toggled, this, [this, l](bool on) { l->setAlphaLocked(on); refresh(); });
+    menu.addSeparator();
+    menu.addAction("이름 바꾸기", [this] { if (QTreeWidgetItem* it = tree_->currentItem()) tree_->editItem(it); });
+    menu.addAction(themedIcon("stack-2", 16), "이미지 평탄화", [this] { flattenAll(); });
+    menu.addAction(themedIcon("trash", 16), "삭제", [this] { removeLayer(); });
+    menu.exec(tree_->viewport()->mapToGlobal(pos));
 }
 
 void LayerPanel::setDocument(app::Document* doc) {
@@ -252,10 +288,20 @@ LayerPtr LayerPanel::activeLayer() const {
     return doc_->layers().find(doc_->layers().activeLayer());
 }
 
+LayerId LayerPanel::idOf(const QTreeWidgetItem* item) {
+    return item == nullptr ? kInvalidLayerId : static_cast<LayerId>(item->data(0, kLayerIdRole).toULongLong());
+}
+
 void LayerPanel::markDirty() {
     if (doc_ != nullptr) {
         doc_->markDirty();
     }
+    Q_EMIT layersChanged();
+}
+
+void LayerPanel::afterCommand(const Result<void>& r) {
+    if (!r.ok()) return;
+    refresh();
     Q_EMIT layersChanged();
 }
 
@@ -283,64 +329,79 @@ QPixmap LayerPanel::thumbnailFor(const Layer& l) const {
     return checkerThumb(full.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation), dpr);
 }
 
-void LayerPanel::fillItem(QListWidgetItem& item, const Layer& l) const {
-    item.setText(QString::fromStdString(l.name()));
-    item.setData(Qt::DecorationRole, QVariant::fromValue(thumbnailFor(l)));
-    item.setData(kLayerIdRole, QVariant::fromValue<qulonglong>(l.id()));
-    item.setData(kVisibleRole, l.visible());
-    item.setData(kLockedRole, l.locked());
-    item.setData(kAlphaRole, l.alphaLocked());
-    item.setData(kClipRole, l.clipToBelow());
+void LayerPanel::fillItem(QTreeWidgetItem& item, const Layer& l) const {
+    const bool group = l.kind() == LayerKind::Group;
+    item.setText(0, QString::fromStdString(l.name()));
+    if (!group) item.setData(0, Qt::DecorationRole, QVariant::fromValue(thumbnailFor(l)));
+    item.setData(0, kLayerIdRole, QVariant::fromValue<qulonglong>(l.id()));
+    item.setData(0, kVisibleRole, l.visible());
+    item.setData(0, kLockedRole, l.locked());
+    item.setData(0, kAlphaRole, l.alphaLocked());
+    item.setData(0, kClipRole, l.clipToBelow());
+    item.setData(0, kGroupRole, group);
+    item.setData(0, kMaskRole, l.mask() != nullptr);
+    Qt::ItemFlags f = item.flags() | Qt::ItemIsEditable | Qt::ItemIsDragEnabled;
+    // 래스터는 자식을 못 받는다(드롭 이벤트에서도 막지만 드롭 표시기부터 안 뜨게).
+    f = group ? (f | Qt::ItemIsDropEnabled) : (f & ~Qt::ItemIsDropEnabled);
+    item.setFlags(f);
+}
+
+void LayerPanel::buildItems(QTreeWidgetItem* parent, const std::vector<LayerPtr>& list, LayerId active,
+                            QTreeWidgetItem*& activeItem) {
+    for (auto it = list.rbegin(); it != list.rend(); ++it) {
+        const Layer& l = **it;
+        auto* item = parent == nullptr ? new QTreeWidgetItem(tree_) : new QTreeWidgetItem(parent);
+        fillItem(*item, l);
+        if (l.id() == active) activeItem = item;
+        if (l.kind() == LayerKind::Group) {
+            buildItems(item, l.children(), active, activeItem);
+            item->setExpanded(true);
+        }
+    }
 }
 
 void LayerPanel::refresh() {
     busy_ = true;
-    list_->clear();
+    tree_->clear();
     if (doc_ != nullptr) {
-        const std::vector<LayerPtr>& roots = doc_->layers().roots();
-        const LayerId active = doc_->layers().activeLayer();
-        int activeRow = -1;
-        for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
-            const Layer& l = **it;
-            auto* item = new QListWidgetItem(list_);
-            item->setFlags(item->flags() | Qt::ItemIsEditable | Qt::ItemIsDragEnabled);
-            fillItem(*item, l);
-            if (l.id() == active) {
-                activeRow = list_->count() - 1;
-            }
-        }
-        if (activeRow >= 0) {
-            list_->setCurrentRow(activeRow);
+        QTreeWidgetItem* activeItem = nullptr;
+        buildItems(nullptr, doc_->layers().roots(), doc_->layers().activeLayer(), activeItem);
+        if (activeItem != nullptr) {
+            tree_->setCurrentItem(activeItem);
+            tree_->scrollToItem(activeItem);
         }
     }
     busy_ = false;
     syncControlsToActive();
 }
 
+QTreeWidgetItem* LayerPanel::itemFor(LayerId id) const {
+    for (QTreeWidgetItemIterator it(tree_); *it != nullptr; ++it) {
+        if (idOf(*it) == id) return *it;
+    }
+    return nullptr;
+}
+
 void LayerPanel::refreshThumbnail(LayerId id) {
     if (doc_ == nullptr) return;
-    for (int i = 0; i < list_->count(); ++i) {
-        QListWidgetItem* item = list_->item(i);
-        if (static_cast<LayerId>(item->data(kLayerIdRole).toULongLong()) == id) {
-            if (const LayerPtr l = doc_->layers().find(id)) {
-                busy_ = true;
-                item->setData(Qt::DecorationRole, QVariant::fromValue(thumbnailFor(*l)));
-                busy_ = false;
-            }
-            return;
-        }
-    }
+    QTreeWidgetItem* item = itemFor(id);
+    const LayerPtr l = doc_->layers().find(id);
+    if (item == nullptr || l == nullptr || l->kind() == LayerKind::Group) return;
+    busy_ = true;
+    item->setData(0, Qt::DecorationRole, QVariant::fromValue(thumbnailFor(*l)));
+    busy_ = false;
 }
 
 void LayerPanel::syncControlsToActive() {
     busy_ = true;
     const LayerPtr l = activeLayer();
     const bool has = l != nullptr;
+    const bool raster = has && l->kind() == LayerKind::Raster;
     blend_->setEnabled(has);
     opacity_->setEnabled(has);
     opacitySpin_->setEnabled(has);
     lock_->setEnabled(has);
-    alphaLock_->setEnabled(has);
+    alphaLock_->setEnabled(raster);
     clip_->setEnabled(has);
     if (has) {
         clip_->setChecked(l->clipToBelow());
@@ -355,61 +416,143 @@ void LayerPanel::syncControlsToActive() {
     busy_ = false;
 }
 
-void LayerPanel::onRowChanged(int row) {
-    if (busy_ || row < 0 || doc_ == nullptr) return;
-    const auto id = static_cast<LayerId>(list_->item(row)->data(kLayerIdRole).toULongLong());
+void LayerPanel::onCurrentChanged(QTreeWidgetItem* cur) {
+    if (busy_ || cur == nullptr || doc_ == nullptr) return;
+    const LayerId id = idOf(cur);
     (void)doc_->layers().setActiveLayer(id);
     syncControlsToActive();
     Q_EMIT activeLayerChanged(id);
 }
 
-void LayerPanel::onItemChanged(QListWidgetItem* item) {
+void LayerPanel::onItemChanged(QTreeWidgetItem* item) {
     if (busy_ || item == nullptr || doc_ == nullptr) return;
-    const auto id = static_cast<LayerId>(item->data(kLayerIdRole).toULongLong());
-    const LayerPtr l = doc_->layers().find(id);
+    const LayerPtr l = doc_->layers().find(idOf(item));
     if (l == nullptr) return;
-    const std::string name = item->text().toStdString();
+    const std::string name = item->text(0).toStdString();
     if (!name.empty() && l->name() != name) {
         l->setName(name);
         doc_->markDirty();
     }
 }
 
-void LayerPanel::onRowsMoved() {
+void LayerPanel::onDropped() {
     if (busy_ || doc_ == nullptr) return;
-    // 목록 순서(위→아래)를 core 순서(아래→위)로 되돌려 하나씩 맞춘다.
-    const int n = list_->count();
+    LayerTree& tree = doc_->layers();
     busy_ = true;
-    for (int row = 0; row < n; ++row) {
-        const auto id = static_cast<LayerId>(list_->item(row)->data(kLayerIdRole).toULongLong());
-        const int index = n - 1 - row;
-        (void)doc_->layers().move(id, kInvalidLayerId, index);
-    }
+    // 트리를 위에서 아래로 훑으며 core 순서(아래→위)로 하나씩 맞춘다. 부모 먼저.
+    const std::function<void(QTreeWidgetItem*, LayerId)> walk = [&](QTreeWidgetItem* parentItem, LayerId parentId) {
+        const int n = parentItem == nullptr ? tree_->topLevelItemCount() : parentItem->childCount();
+        for (int row = 0; row < n; ++row) {
+            QTreeWidgetItem* it = parentItem == nullptr ? tree_->topLevelItem(row) : parentItem->child(row);
+            const LayerId id = idOf(it);
+            (void)tree.move(id, parentId, n - 1 - row);
+            if (it->data(0, kGroupRole).toBool()) walk(it, id);
+        }
+    };
+    walk(nullptr, kInvalidLayerId);
     busy_ = false;
+    refresh();
     markDirty();
+}
+
+void LayerPanel::locateActive(LayerId& parent, int& index) const {
+    parent = kInvalidLayerId;
+    index = -1;
+    if (doc_ == nullptr) return;
+    const LayerId active = doc_->layers().activeLayer();
+    const std::function<bool(const std::vector<LayerPtr>&, LayerId)> find =
+        [&](const std::vector<LayerPtr>& list, LayerId p) {
+            for (usize i = 0; i < list.size(); ++i) {
+                if (list[i]->id() == active) {
+                    parent = p;
+                    index = static_cast<int>(i);
+                    return true;
+                }
+                if (list[i]->kind() == LayerKind::Group && find(list[i]->children(), list[i]->id())) return true;
+            }
+            return false;
+        };
+    (void)find(doc_->layers().roots(), kInvalidLayerId);
 }
 
 void LayerPanel::addLayer() {
     if (doc_ == nullptr) return;
     const std::string name = "레이어 " + std::to_string(doc_->layers().roots().size() + 1);
-    const LayerPtr active = activeLayer();
-    // 활성 레이어 바로 위에 넣는다(페인팅 앱 관례).
+    // 활성 레이어 바로 위(같은 부모)에 넣는다(페인팅 앱 관례).
+    LayerId parent = kInvalidLayerId;
     int index = -1;
-    if (active != nullptr) {
-        const auto& roots = doc_->layers().roots();
-        for (usize i = 0; i < roots.size(); ++i) {
-            if (roots[i]->id() == active->id()) {
-                index = static_cast<int>(i) + 1;
-                break;
-            }
-        }
-    }
-    const Result<LayerPtr> made = doc_->layers().addRaster(name, kInvalidLayerId, index);
+    locateActive(parent, index);
+    const Result<LayerPtr> made = doc_->layers().addRaster(name, parent, index < 0 ? -1 : index + 1);
     if (!made.ok()) return;
     (void)doc_->layers().setActiveLayer(made.value()->id());
     doc_->markDirty();
     refresh();
     Q_EMIT activeLayerChanged(made.value()->id());
+}
+
+void LayerPanel::addGroup() {
+    if (doc_ == nullptr) return;
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    locateActive(parent, index);
+    const Result<LayerPtr> made = doc_->layers().addGroup("그룹", parent, index < 0 ? -1 : index + 1);
+    if (!made.ok()) return;
+    (void)doc_->layers().setActiveLayer(made.value()->id());
+    doc_->markDirty();
+    refresh();
+    Q_EMIT activeLayerChanged(made.value()->id());
+}
+
+void LayerPanel::groupActive() {
+    if (doc_ == nullptr) return;
+    const LayerPtr l = activeLayer();
+    if (!l) return;
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    locateActive(parent, index);
+    const Result<LayerPtr> made = doc_->layers().addGroup("그룹", parent, index < 0 ? -1 : index + 1);
+    if (!made.ok()) return;
+    (void)doc_->layers().move(l->id(), made.value()->id(), 0);
+    (void)doc_->layers().setActiveLayer(l->id());
+    doc_->markDirty();
+    refresh();
+    Q_EMIT layersChanged();
+}
+
+void LayerPanel::ungroupActive() {
+    if (doc_ == nullptr) return;
+    const LayerPtr g = activeLayer();
+    if (!g || g->kind() != LayerKind::Group) return;
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    locateActive(parent, index);
+    if (index < 0) return;
+    const std::vector<LayerPtr> kids = g->children(); // 복사 — 옮기면서 원본이 바뀐다
+    for (usize i = 0; i < kids.size(); ++i) {
+        (void)doc_->layers().move(kids[i]->id(), parent, index + static_cast<int>(i));
+    }
+    (void)doc_->layers().remove(g->id());
+    if (!kids.empty()) (void)doc_->layers().setActiveLayer(kids.back()->id());
+    doc_->markDirty();
+    refresh();
+    Q_EMIT layersChanged();
+    Q_EMIT activeLayerChanged(doc_->layers().activeLayer());
+}
+
+void LayerPanel::selectAdjacent(int delta) {
+    if (doc_ == nullptr) return;
+    QTreeWidgetItem* cur = tree_->currentItem();
+    if (cur == nullptr) return;
+    QTreeWidgetItem* next = delta > 0 ? tree_->itemAbove(cur) : tree_->itemBelow(cur);
+    if (next != nullptr) tree_->setCurrentItem(next);
+}
+
+void LayerPanel::toggleClipActive() {
+    if (const LayerPtr l = activeLayer()) {
+        l->setClipToBelow(!l->clipToBelow());
+        refresh();
+        markDirty();
+    }
 }
 
 void LayerPanel::duplicateLayer() {
@@ -424,12 +567,20 @@ void LayerPanel::duplicateLayer() {
 }
 
 void LayerPanel::removeLayer() {
-    if (doc_ == nullptr || doc_->layers().roots().size() <= 1) return;
+    if (doc_ == nullptr) return;
     const LayerId id = doc_->layers().activeLayer();
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    locateActive(parent, index);
+    if (parent == kInvalidLayerId && doc_->layers().roots().size() <= 1) return; // 마지막 루트는 남긴다
     if (!app::removeLayerUndoable(*doc_, id).ok()) return;
-    if (!doc_->layers().roots().empty()) {
-        (void)doc_->layers().setActiveLayer(doc_->layers().roots().back()->id());
-    }
+    // 같은 형제 목록에서 바로 아래(없으면 부모/맨 위)를 활성으로.
+    const std::vector<LayerPtr>& sib =
+        parent == kInvalidLayerId ? doc_->layers().roots() : doc_->layers().find(parent)->children();
+    LayerId next = parent;
+    if (!sib.empty()) next = sib[static_cast<usize>(std::max(0, std::min(index - 1, static_cast<int>(sib.size()) - 1)))]->id();
+    if (next == kInvalidLayerId && !doc_->layers().roots().empty()) next = doc_->layers().roots().back()->id();
+    (void)doc_->layers().setActiveLayer(next);
     refresh();
     markDirty();
     Q_EMIT activeLayerChanged(doc_->layers().activeLayer());
@@ -437,18 +588,43 @@ void LayerPanel::removeLayer() {
 
 void LayerPanel::moveActive(int delta) {
     if (doc_ == nullptr) return;
-    const auto& roots = doc_->layers().roots();
-    const LayerId id = doc_->layers().activeLayer();
-    for (usize i = 0; i < roots.size(); ++i) {
-        if (roots[i]->id() == id) {
-            const int target = static_cast<int>(i) + delta;
-            if (target < 0 || target >= static_cast<int>(roots.size())) return;
-            (void)doc_->layers().move(id, kInvalidLayerId, target);
-            refresh();
-            markDirty();
-            return;
-        }
-    }
+    LayerId parent = kInvalidLayerId;
+    int index = -1;
+    locateActive(parent, index);
+    if (index < 0) return;
+    const std::vector<LayerPtr>& sib =
+        parent == kInvalidLayerId ? doc_->layers().roots() : doc_->layers().find(parent)->children();
+    const int target = index + delta;
+    if (target < 0 || target >= static_cast<int>(sib.size())) return;
+    (void)doc_->layers().move(doc_->layers().activeLayer(), parent, target);
+    refresh();
+    markDirty();
+}
+
+void LayerPanel::flattenAll() {
+    if (doc_ == nullptr) return;
+    const Result<LayerId> r = app::flattenAll(*doc_);
+    if (!r.ok()) return;
+    refresh();
+    Q_EMIT layersChanged();
+    Q_EMIT activeLayerChanged(r.value());
+}
+
+void LayerPanel::addMask(bool fromSelection) {
+    if (doc_ == nullptr) return;
+    afterCommand(app::addLayerMask(*doc_, doc_->layers().activeLayer(), fromSelection));
+}
+void LayerPanel::applyMask() {
+    if (doc_ == nullptr) return;
+    afterCommand(app::applyLayerMask(*doc_, doc_->layers().activeLayer()));
+}
+void LayerPanel::removeMask() {
+    if (doc_ == nullptr) return;
+    afterCommand(app::removeLayerMask(*doc_, doc_->layers().activeLayer()));
+}
+void LayerPanel::paintMaskWithSelection(bool reveal) {
+    if (doc_ == nullptr) return;
+    afterCommand(app::paintMaskWithSelection(*doc_, doc_->layers().activeLayer(), reveal ? u8{255} : u8{0}));
 }
 
 } // namespace mari::ui

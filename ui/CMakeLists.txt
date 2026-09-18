@@ -36,6 +36,8 @@ set(MARI_UI_SOURCES
     popup_palette.cpp
     popup_palette.hpp
     tablet_dialog.cpp
+    shortcut_dialog.hpp
+    shortcut_dialog.cpp
     tablet_dialog.hpp
     navigator.cpp
     navigator.hpp
