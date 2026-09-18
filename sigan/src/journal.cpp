@@ -1,5 +1,6 @@
 // Mari Paint — append-only 저널 (docs/03 4.2 · 5.4)
 #include <mari/sigan/journal.hpp>
+#include <mari/core/fs.hpp>
 
 #include <bit>
 #include <cstring>
@@ -63,7 +64,7 @@ Journal::~Journal() {
 Result<JournalPtr> Journal::create(const std::string& path, u64 sessionId, i64 wallAnchorUnixMs) {
     JournalPtr j(new Journal());
     j->path_ = path;
-    j->fp_ = std::fopen(path.c_str(), "wb");
+    j->fp_ = fopenUtf8(path, "wb");
     if (j->fp_ == nullptr) {
         return Err("저널 파일을 열지 못했다: " + path, ErrorCode::IoError);
     }
@@ -158,7 +159,7 @@ bool Journal::flush() noexcept {
 }
 
 Result<JournalScan> Journal::scan(const std::string& path) {
-    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    std::FILE* fp = fopenUtf8(path, "rb");
     if (fp == nullptr) {
         return Err("저널 파일을 열지 못했다: " + path, ErrorCode::NotFound);
     }

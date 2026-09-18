@@ -32,6 +32,12 @@ if(MSVC)
     target_compile_options(mari_common INTERFACE /W4 /permissive- /utf-8)
     # 테스트가 RSS 를 GetProcessMemoryInfo 로 잰다(include/mari/test/sys.hpp).
     target_link_libraries(mari_common INTERFACE psapi)
+    # 🔴 ODR 가드. 이 매크로들은 헤더 안의 타입 크기·의미를 바꾼다. 일부 타깃(Qt 를 링크하는 ui)에만
+    #    들어가면 같은 클래스를 두 레이아웃으로 컴파일해 힙이 깨진다(실측: MainWindow 생성자에서
+    #    0xc0000374, Qt 가 _ENABLE_EXTENDED_ALIGNED_STORAGE 를 ui 에만 넣었다). 전부 여기서 한 번에.
+    target_compile_definitions(mari_common INTERFACE
+        _ENABLE_EXTENDED_ALIGNED_STORAGE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 else()
     target_compile_options(mari_common INTERFACE
         -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion)

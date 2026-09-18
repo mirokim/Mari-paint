@@ -4,6 +4,7 @@
 // POSIX 는 같은 이름의 유닉스 도메인 소켓으로 대체한다 — 개발·CI 가 Linux 라서
 // **양쪽 다 컴파일되고 양쪽 다 동작해야 한다.**
 #include <mari/sigan/pipe_sink.hpp>
+#include <mari/core/fs.hpp>
 
 #include <cstdlib>
 #include <cstring>
@@ -72,7 +73,8 @@ void PipeSink::close() noexcept {
 Result<void> PipeSink::connect() {
     close();
 #ifdef _WIN32
-    HANDLE h = ::CreateFileA(path_.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+    // 파이프 이름도 UTF-8 규약이다(core/fs.hpp). A 함수는 코드페이지를 탄다.
+    HANDLE h = ::CreateFileW(fsPath(path_).c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                              OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         return Err("Sigan 파이프에 붙지 못했다: " + path_, ErrorCode::IoError);

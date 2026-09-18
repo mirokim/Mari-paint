@@ -25,6 +25,9 @@ add_library(mari::cli ALIAS mari_cli)
 mari_register_module(mari_cli)
 
 # 실제로 돌려 볼 수 있는 바이너리. Qt 없이 빌드된다.
+# 🔴 매니페스트를 달지 마라. dpiAwareness 를 선언하면 Qt 6 이 스스로 켜는 PerMonitorV2 와 겹쳐
+#    시작 직후 힙 손상(0xc0000374)이 무작위로 난다(실측: 12회 중 1~3회). activeCodePage UTF-8 도
+#    필요 없다 — UTF-8 경로는 core/fs.hpp 가 여는 쪽에서 처리한다(테스트·호스트 exe 까지 같은 규약).
 add_executable(mari-paint src/main.cpp)
 target_link_libraries(mari-paint PRIVATE mari::common mari::cli)
 set_target_properties(mari-paint PROPERTIES OUTPUT_NAME "mari-paint")

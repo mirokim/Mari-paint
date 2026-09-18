@@ -23,7 +23,22 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTimer>
 #include <QVBoxLayout>
+
+#include <cstdio>
+
+
+#include <windows.h>
+namespace {
+// 진단: 프로세스 힙이 온전한지 그 자리에서 확인한다(손상이면 죽지 않고 false 를 준다).
+void heapCheck(const char* where) {
+    if (!qEnvironmentVariableIsSet("MARI_GUI_TRACE")) return;
+    const BOOL ok = ::HeapValidate(::GetProcessHeap(), 0, nullptr);
+    std::fprintf(stderr, "[heap] %-32s %s\n", where, ok ? "ok" : "CORRUPT");
+    std::fflush(stderr);
+}
+} // namespace
 
 namespace mari::ui {
 
@@ -37,13 +52,23 @@ QString layerLabel(const Layer& l) {
 
 MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* parent)
     : QMainWindow(parent), app_(app), journalPath_(std::move(journalPath)) {
+    heapCheck("MainWindow ctor start");
     brushes_ = brush::builtinPresets();
+    heapCheck("after builtinPresets");
 
+    if (qEnvironmentVariableIsSet("MARI_GUI_TRACE")) {
+        std::fprintf(stderr, "[mari-gui] sizeof(CanvasWidget) in main_window.cpp = %zu\n", sizeof(CanvasWidget));
+        std::fflush(stderr);
+    }
     canvas_ = new CanvasWidget(this);
+    heapCheck("after new CanvasWidget");
     setCentralWidget(canvas_);
+    heapCheck("after setCentralWidget");
     canvas_->setStrokeConfigProvider([this] { return strokeConfig(); });
+    heapCheck("after setStrokeConfigProvider");
 
     buildMenus();
+    heapCheck("after buildMenus");
     buildToolbar();
     buildLayerPanel();
     buildStatusBar();
@@ -76,6 +101,22 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     resize(1400, 900);
     refreshTitle();
     refreshStatus();
+
+    if (qEnvironmentVariableIsSet("MARI_GUI_TRACE")) {
+        QTimer::singleShot(1500, this, [this] {
+            const auto g = [](const char* n, const QWidget* w) {
+                const QRect r = w->geometry();
+                std::fprintf(stderr, "[mari-gui] %s geom=%d,%d %dx%d visible=%d\n", n, r.x(), r.y(),
+                             r.width(), r.height(), w->isVisible() ? 1 : 0);
+            };
+            std::fprintf(stderr, "[mari-gui] dpr=%.2f\n", devicePixelRatioF());
+            g("window", this);
+            g("canvas", canvas_);
+            g("statusbar", statusBar());
+            g("layerdock", layerList_->parentWidget()->parentWidget());
+            std::fflush(stderr);
+        });
+    }
 }
 
 MainWindow::~MainWindow() = default;

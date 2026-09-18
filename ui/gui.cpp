@@ -15,6 +15,18 @@
 #include <exception>
 #include <memory>
 
+
+#include <windows.h>
+namespace {
+// 진단: 프로세스 힙이 온전한지 그 자리에서 확인한다(손상이면 죽지 않고 false 를 준다).
+void heapCheck(const char* where) {
+    if (!qEnvironmentVariableIsSet("MARI_GUI_TRACE")) return;
+    const BOOL ok = ::HeapValidate(::GetProcessHeap(), 0, nullptr);
+    std::fprintf(stderr, "[heap] %-32s %s\n", where, ok ? "ok" : "CORRUPT");
+    std::fflush(stderr);
+}
+} // namespace
+
 namespace mari::ui {
 
 int runGui(int argc, char** argv) {
@@ -47,7 +59,7 @@ int runGui(int argc, char** argv) {
     };
     tr("start");
     QApplication qapp(argc, argv);
-    tr("QApplication ok");
+    tr("QApplication ok"); heapCheck("after QApplication");
     QApplication::setApplicationName("Mari Paint");
     QApplication::setOrganizationName("Mari");
 
@@ -61,22 +73,27 @@ int runGui(int argc, char** argv) {
     record::RecordingConfig rc;
     rc.journalDir = journalDir.toStdString();
     auto recorders = std::make_unique<record::SiganRecorderFactory>(std::move(rc));
-    tr("recorder factory ok");
+    tr("recorder factory ok"); heapCheck("after factory");
 
     app::Application app;
-    app.setRecorderFactory(recorders.get());
+    heapCheck("after Application ctor");
+    if (!qEnvironmentVariableIsSet("MARI_GUI_NOREC")) { // 진단용 토글
+        app.setRecorderFactory(recorders.get());
+    }
     app.setVisible(true);
 
     // 빈 캔버스로 시작한다. 실패하면(저널을 못 열었다 등) 문서 없이 뜨고 창이 이유를 보여 준다.
     QString startupError;
-    const Result<app::IDocumentBridge*> first = app.createDocument(1920, 1080);
-    if (!first.ok()) {
-        startupError = QString::fromStdString(first.message());
+    if (!qEnvironmentVariableIsSet("MARI_GUI_NODOC")) { // 진단용 토글
+        const Result<app::IDocumentBridge*> first = app.createDocument(1920, 1080);
+        if (!first.ok()) {
+            startupError = QString::fromStdString(first.message());
+        }
     }
-    tr(first.ok() ? "document ok" : "document FAILED");
+    tr(startupError.isEmpty() ? "document ok" : "document FAILED"); heapCheck("after createDocument");
 
     MainWindow win(app, journalDir);
-    tr("MainWindow ok");
+    tr("MainWindow ok"); heapCheck("after MainWindow ctor");
     win.show();
     tr("shown — entering event loop");
     if (!startupError.isEmpty()) {

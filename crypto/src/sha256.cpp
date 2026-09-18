@@ -3,6 +3,7 @@
 // 상수·의사코드는 전부 규격에서 온 것이다. 최적화하지 않았다 —
 // 여기서 노리는 것은 속도가 아니라 **NIST 벡터와 한 비트도 안 틀리는 것**이다.
 #include <mari/crypto/sha256.hpp>
+#include <mari/core/fs.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -201,7 +202,7 @@ Sha256Digest sha256(const void* data, usize len) noexcept {
 std::string sha256Hex(const void* data, usize len) { return toHex(sha256(data, len)); }
 
 Result<std::string> sha256FileHex(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::FILE* f = fopenUtf8(path, "rb");
     if (f == nullptr) {
         return Err("파일을 열 수 없다: " + path, ErrorCode::IoError);
     }

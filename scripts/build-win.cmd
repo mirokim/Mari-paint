@@ -21,6 +21,11 @@ call "%VS_BT%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 rem vcvars 가 VCPKG_ROOT 를 VS 동봉본(공백 있는 경로)으로 덮어쓴다. 그 뒤에 우리 것으로 고정.
 set VCPKG_ROOT=C:\Dev\vcpkg
 
+rem 🔴 cl.exe 메시지를 영어로 고정한다. 한국어 로캘에서는 /showIncludes 가 "참고: 포함 파일:" 을
+rem    CP949 로 찍고, ninja 는 CMake 가 적어 둔 UTF-8 접두어와 못 맞춰 **헤더 의존성을 하나도 추적하지
+rem    못한다**(실측: ninja -t deps → #deps 0). 헤더를 고쳐도 일부만 재빌드돼 레이아웃이 섞이고 힙이 깨졌다.
+set VSLANG=1033
+
 if not exist C:\Dev\tmp mkdir C:\Dev\tmp
 set TMP=C:\Dev\tmp
 set TEMP=C:\Dev\tmp

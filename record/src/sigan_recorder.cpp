@@ -2,6 +2,7 @@
 //
 // 🔴 이 파일이 리포에서 `SiganPublisher::publish()` 를 부르는 **유일한** 곳이다.
 #include <mari/record/sigan_recorder.hpp>
+#include <mari/core/fs.hpp>
 
 #include <mari/sigan/prooflog.hpp>
 
@@ -203,18 +204,18 @@ Result<std::unique_ptr<agent::IStrokeRecorder>>
 SiganRecorderFactory::openForDocument(std::string_view hint) {
     std::filesystem::path dir =
         cfg_.journalDir.empty() ? std::filesystem::temp_directory_path()
-                                : std::filesystem::path(cfg_.journalDir);
+                                : fsPath(cfg_.journalDir);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec && !std::filesystem::exists(dir)) {
-        return Err("저널 디렉터리를 만들 수 없다: " + dir.string(), ErrorCode::IoError);
+        return Err("저널 디렉터리를 만들 수 없다: " + pathToUtf8(dir), ErrorCode::IoError);
     }
     const u64 segment = nextSegment_++;
     // 힌트가 경로면 파일 이름만 쓴다(경로를 그대로 파일 이름에 넣지 않는다).
-    const std::filesystem::path hp{std::string(hint)};
-    const std::string tag = sanitize(hp.filename().string());
+    const std::filesystem::path hp = fsPath(hint);
+    const std::string tag = sanitize(pathToUtf8(hp.filename()));
     const std::string path =
-        (dir / ("mari-" + tag + "-" + std::to_string(segment) + ".jrnl")).string();
+        pathToUtf8(dir / ("mari-" + tag + "-" + std::to_string(segment) + ".jrnl"));
 
     Result<std::unique_ptr<SiganRecorder>> rec = SiganRecorder::open(cfg_, path, segment);
     if (!rec.ok()) {

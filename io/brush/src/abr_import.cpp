@@ -9,6 +9,7 @@
 //   2) **정직하게 실패한다** — 읽었지만 번역하지 못한 키를 전부 ImportReport 에 남긴다.
 //      (Krita 가 텍스처만 가져오고 아무 말 없이 나머지를 버려서 욕먹는다 — docs/01 2.1)
 #include <mari/io/brush/importer.hpp>
+#include <mari/core/fs.hpp>
 
 #include <mari/io/brush/abr_descriptor.hpp>
 #include <mari/io/brush/byte_reader.hpp>
@@ -853,7 +854,7 @@ MariBrushPreset presetFromSample(const SampBrush& s, usize index) {
 } // namespace
 
 BrushFormat detectFormat(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::FILE* f = fopenUtf8(path, "rb");
     if (f == nullptr)
         return BrushFormat::Unknown;
     u8 head[16] = {};
@@ -998,7 +999,7 @@ Result<ImportResult> importAbrBytes(const u8* data, usize size, const std::strin
 }
 
 Result<ImportResult> importAbrFile(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::FILE* f = fopenUtf8(path, "rb");
     if (f == nullptr)
         return Err("파일을 열지 못했다: " + path, ErrorCode::IoError);
     std::vector<u8> buf;

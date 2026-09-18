@@ -1,5 +1,6 @@
 // Mari Paint — CLI 본체. agent-api 위에 얹는 얇은 어댑터다.
 #include <mari/cli/runner.hpp>
+#include <mari/core/fs.hpp>
 
 #include <mari/agent/view.hpp>
 #include <mari/cli/server.hpp>
@@ -273,7 +274,7 @@ Result<void> spillImage(Json& envelope, const std::string& outDir, usize seq, bo
         return bytes.error();
     }
     const std::string name = std::to_string(seq) + "-" + sanitize(envelope["op"].asString()) + ".png";
-    const std::string path = (std::filesystem::path(outDir) / name).string();
+    const std::string path = pathToUtf8(fsPath(outDir) / name);
     const Result<void> w = ora::writeFileBytes(path, bytes.value().data(), bytes.value().size());
     if (!w.ok()) {
         return w;
@@ -429,7 +430,7 @@ int runCli(const std::vector<std::string>& args, std::ostream& out, std::ostream
 
     if (!opt.outDir.empty()) {
         std::error_code ec;
-        std::filesystem::create_directories(opt.outDir, ec);
+        std::filesystem::create_directories(fsPath(opt.outDir), ec);
         if (ec) {
             err << "오류: --out-dir 를 만들 수 없다: " << opt.outDir << " (" << ec.message()
                 << ")\n";

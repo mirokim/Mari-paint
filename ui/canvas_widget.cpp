@@ -5,20 +5,29 @@
 #include <mari/core/origin.hpp>
 #include <mari/stroke/input.hpp>
 
+#include <QCoreApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QWheelEvent>
 
+#include <windowsx.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace mari::ui {
 
 namespace {
 
 constexpr f64 kMinZoom = 0.02;
+
+bool traceOn() {
+    static const bool on = qEnvironmentVariableIsSet("MARI_GUI_TRACE");
+    return on;
+}
 constexpr f64 kMaxZoom = 64.0;
 
 QBrush checkerBrush() {
@@ -38,13 +47,20 @@ QBrush checkerBrush() {
 } // namespace
 
 CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
-    // 🔴 이 위젯은 자기 HWND 를 가진다. 그래야 WM_POINTER 가 이 위젯의 nativeEvent 로 온다
-    //    (기본값이면 최상위 창의 HWND 하나뿐이고 자식은 메시지를 못 본다).
-    setAttribute(Qt::WA_NativeWindow);
+    // ⚠️ WA_NativeWindow 를 주지 않는다 — 헤더 머리글 3번. 메시지는 최상위 창에서 필터로 받는다.
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_NoSystemBackground);
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(64, 64);
+    // 🔴 필터는 여기서 건다. showEvent 안에서 걸면 Qt 가 네이티브 메시지를 돌리며 필터 목록을
+    //    순회하는 **도중에** 목록이 바뀌어 Qt6Widgets 안에서 죽는다(실측: 실행의 절반이 show() 에서
+    //    AV). 생성자는 네이티브 이벤트 밖이다. attached_ 가 false 인 동안 필터는 아무것도 안 한다.
+    QCoreApplication::instance()->installNativeEventFilter(this);
+    if (traceOn()) {
+        std::fprintf(stderr, "[mari-gui] sizeof(CanvasWidget) in canvas_widget.cpp = %zu (PointerInput %zu, QImage %zu)\n",
+                     sizeof(CanvasWidget), sizeof(mari::win::PointerInput), sizeof(QImage));
+        std::fflush(stderr);
+    }
 }
 
 CanvasWidget::~CanvasWidget() {
@@ -52,6 +68,7 @@ CanvasWidget::~CanvasWidget() {
         // 창이 닫히는 중이다. 획을 up 없이 버리지 않는다 — 기록에 끝을 남긴다.
         finishStroke(nullptr);
     }
+    QCoreApplication::instance()->removeNativeEventFilter(this);
     pointer_.detach();
 }
 
@@ -69,10 +86,19 @@ void CanvasWidget::setDocument(app::Document* doc) {
         return;
     }
     const Size sz = doc_->canvasSize();
-    backing_ = QImage(sz.width, sz.height, QImage::Format_RGBA8888);
+    // 🔴 premultiplied 로 둔다. straight alpha 를 QPainter 가 축소 샘플링하면 투명(0,0,0,0) 이
+    //    섞여 갱신 사각형 가장자리에 검은 헤어라인이 생긴다(실측). 합성기는 straight 로 내므로
+    //    compositePending() 이 더티 영역만 변환한다.
+    backing_ = QImage(sz.width, sz.height, QImage::Format_ARGB32_Premultiplied);
     backing_.fill(Qt::transparent);
+    straight_.clear();
     pendingComposite_ = Rect{0, 0, sz.width, sz.height};
-    fitToView();
+    // 레이아웃 전(100×30)에 맞추면 캔버스가 구석에 작게 뜬다. 실제 크기가 오면 맞춘다.
+    needFit_ = true;
+    if (width() > 200 && height() > 200) {
+        needFit_ = false;
+        fitToView();
+    }
     update();
 }
 
@@ -108,10 +134,22 @@ void CanvasWidget::compositePending() {
         return;
     }
     // 더티 영역만 평탄화한다. 전체 재합성은 없다(docs/08 3.1).
-    u8* dst = backing_.scanLine(r.y) + static_cast<usize>(r.x) * 4u;
-    const Result<void> ok = compositeArea(doc_->layers(), r, dst,
-                                          static_cast<usize>(backing_.bytesPerLine()));
+    const usize stride = static_cast<usize>(r.width) * 4u;
+    straight_.resize(stride * static_cast<usize>(r.height));
+    const Result<void> ok = compositeArea(doc_->layers(), r, straight_.data(), stride);
     (void)ok; // 합성 실패는 화면이 안 바뀌는 것으로 드러난다. 핫 패스에서 던지지 않는다.
+    // straight RGBA → premultiplied BGRA(ARGB32 리틀엔디언). 더티 영역만이다.
+    for (i32 y = 0; y < r.height; ++y) {
+        const u8* src = straight_.data() + static_cast<usize>(y) * stride;
+        u8* dst = backing_.scanLine(r.y + y) + static_cast<usize>(r.x) * 4u;
+        for (i32 x = 0; x < r.width; ++x, src += 4, dst += 4) {
+            const u32 a = src[3];
+            dst[0] = static_cast<u8>((src[2] * a + 127u) / 255u);
+            dst[1] = static_cast<u8>((src[1] * a + 127u) / 255u);
+            dst[2] = static_cast<u8>((src[0] * a + 127u) / 255u);
+            dst[3] = static_cast<u8>(a);
+        }
+    }
 }
 
 // ── 그리기 ───────────────────────────────────────────────────────────────
@@ -120,7 +158,26 @@ f64 CanvasWidget::dpr() const {
     return devicePixelRatioF();
 }
 
+QPointF CanvasWidget::physOffset() const {
+    const QPoint o = mapTo(window(), QPoint(0, 0));
+    return QPointF(o) * dpr();
+}
+
+QRectF CanvasWidget::physRect() const {
+    return QRectF(physOffset(), QSizeF(size()) * dpr());
+}
+
+void CanvasWidget::pushViewToPointer() {
+    // PointerInput 은 최상위 창 클라이언트 물리 px 를 본다. 위젯 오프셋만큼 옮긴 사본을 준다.
+    mari::win::ViewState st = view_.state();
+    const QPointF o = physOffset();
+    st.anchorScreen.x += static_cast<f32>(o.x());
+    st.anchorScreen.y += static_cast<f32>(o.y());
+    pointer_.setView(mari::win::ViewTransform(st));
+}
+
 QTransform CanvasWidget::canvasToWidget() const {
+    // view_ 는 "캔버스 → 이 위젯의 물리 px" 다.
     // Affine2: x' = a x + b y + tx, y' = c x + d y + ty
     // QTransform(m11, m12, m21, m22, dx, dy): x' = m11 x + m21 y + dx, y' = m12 x + m22 y + dy
     const mari::win::Affine2& f = view_.canvasToScreen();
@@ -147,8 +204,12 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
     p.setRenderHint(QPainter::SmoothPixmapTransform, view_.state().zoom < 1.0);
 
     // 화면의 갱신 영역만큼만 캔버스를 그린다 — 큰 캔버스에서 전체를 넘기지 않는다.
-    const QRectF visibleCanvas =
-        t.inverted().mapRect(QRectF(e->rect())).intersected(QRectF(backing_.rect()));
+    // 정수 정렬 + 1px 여유: 소스 사각형이 소수면 bilinear 가 경계 밖 픽셀을 섞어 이음새가 보인다.
+    const QRectF visibleCanvas = QRectF(t.inverted()
+                                            .mapRect(QRectF(e->rect()))
+                                            .toAlignedRect()
+                                            .adjusted(-1, -1, 1, 1)
+                                            .intersected(backing_.rect()));
     if (visibleCanvas.isEmpty()) {
         return;
     }
@@ -174,25 +235,58 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
 
 void CanvasWidget::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
+    if (needFit_ && doc_ != nullptr && width() > 200 && height() > 200 && live_ == nullptr) {
+        needFit_ = false;
+        fitToView();
+    } else if (attached_) {
+        pushViewToPointer();
+    }
+}
+
+void CanvasWidget::moveEvent(QMoveEvent* e) {
+    QWidget::moveEvent(e);
+    if (attached_) {
+        pushViewToPointer();
+    }
 }
 
 void CanvasWidget::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
     if (!attached_) {
-        auto hwnd = reinterpret_cast<HWND>(winId());
-        const Result<void> ok = pointer_.attach(hwnd, this);
+        // 최상위 창의 HWND. 이 위젯은 HWND 가 없다(머리글 3번).
+        topHwnd_ = reinterpret_cast<HWND>(window()->winId());
+        const Result<void> ok = pointer_.attach(topHwnd_, this);
         attached_ = ok.ok();
-        pointer_.setView(view_);
+        if (traceOn()) {
+            std::fprintf(stderr, "[mari-gui] pointer attach hwnd=%p ok=%d mouseInPointer=%d\n",
+                         static_cast<void*>(topHwnd_), attached_ ? 1 : 0,
+                         ::IsMouseInPointerEnabled() ? 1 : 0);
+        }
+        if (attached_) {
+            pushViewToPointer();
+        }
     }
 }
 
 // ── WM_POINTER ───────────────────────────────────────────────────────────
 
-bool CanvasWidget::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
+bool CanvasWidget::nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) {
     if (eventType != "windows_generic_MSG" || !attached_) {
         return false;
     }
     auto* msg = static_cast<MSG*>(message);
+    if (traceOn() && msg->message >= WM_POINTERUPDATE && msg->message <= WM_POINTERCAPTURECHANGED) {
+        static int n = 0;
+        if (n < 12) {
+            ++n;
+            std::fprintf(stderr, "[mari-gui] WM_POINTER 0x%03X hwnd=%p (top=%p) id=%u\n", msg->message,
+                         static_cast<void*>(msg->hwnd), static_cast<void*>(topHwnd_),
+                         static_cast<unsigned>(GET_POINTERID_WPARAM(msg->wParam)));
+        }
+    }
+    if (msg->hwnd != topHwnd_) {
+        return false;
+    }
     switch (msg->message) {
     case WM_POINTERDOWN:
     case WM_POINTERUPDATE:
@@ -206,18 +300,22 @@ bool CanvasWidget::nativeEvent(const QByteArray& eventType, void* message, qintp
         return false;
     }
 
-    // 그리기 버튼이 아닌 것(가운데·오른쪽 버튼)은 Qt 에 넘겨 팬 등 UI 조작으로 쓴다.
-    // 🔴 down 을 넘겼으면 그 포인터의 update/up 도 같이 넘겨야 Qt 의 버튼 상태가 안 꼬인다.
-    static u32 bypassId = 0;
     const u32 id = static_cast<u32>(GET_POINTERID_WPARAM(msg->wParam));
-    if (msg->message == WM_POINTERDOWN && !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam)) {
-        bypassId = id;
-        return false;
+    if (msg->message == WM_POINTERDOWN) {
+        // 캔버스 밖(툴바·도크)이거나 그리기 버튼이 아니면(가운데·오른쪽) Qt 의 것이다.
+        // 🔴 down 을 넘겼으면 그 포인터의 update/up 도 같이 넘겨야 Qt 의 버튼 상태가 안 꼬인다.
+        POINT pt{GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam)};
+        ::ScreenToClient(topHwnd_, &pt);
+        const bool inside = physRect().contains(QPointF(pt.x, pt.y));
+        if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam)) {
+            bypassId_ = id;
+            return false;
+        }
     }
-    if (bypassId != 0 && id == bypassId &&
+    if (bypassId_ != 0 && id == bypassId_ &&
         (msg->message == WM_POINTERUPDATE || msg->message == WM_POINTERUP)) {
         if (msg->message == WM_POINTERUP) {
-            bypassId = 0;
+            bypassId_ = 0;
         }
         return false;
     }
@@ -225,13 +323,20 @@ bool CanvasWidget::nativeEvent(const QByteArray& eventType, void* message, qintp
     bool handled = false;
     const LRESULT r = pointer_.handleMessage(msg->hwnd, msg->message, msg->wParam, msg->lParam, handled);
     if (handled) {
-        *result = static_cast<qintptr>(r);
+        // ⚠️ Qt 는 result 에 nullptr 을 넘기기도 한다(실측: 그리기 첫 WM_POINTERDOWN 에서 죽었다).
+        if (result != nullptr) {
+            *result = static_cast<qintptr>(r);
+        }
         return true;
     }
     return false;
 }
 
 void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
+    if (traceOn()) {
+        std::fprintf(stderr, "[mari-gui] onPointerDown canvas=(%.1f,%.1f) kind=%d\n", s.event.x, s.event.y,
+                     static_cast<int>(s.kind));
+    }
     if (doc_ == nullptr) {
         return;
     }
@@ -300,7 +405,7 @@ void CanvasWidget::applyView() {
     if (live_ != nullptr) {
         return;
     }
-    pointer_.setView(view_);
+    pushViewToPointer();
     update();
     emit viewChanged();
 }

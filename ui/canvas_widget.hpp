@@ -4,8 +4,12 @@
 //   1. **더티 영역만** 그린다. `core` 의 합성기가 더티 사각형을 RGBA8 로 평탄화해 주고,
 //      여기는 그걸 QImage 백킹에 덮어 쓴 뒤 그 영역만 화면에 올린다. 전체 재합성 코드는 없다.
 //   2. 뷰 변환(줌·회전·팬)을 **소유**한다. 캔버스는 화면을 모른다(docs/08 3.1).
-//   3. WM_POINTER 를 `nativeEvent()` 에서 직접 받아 `platform/win` 의 PointerInput 에 넘긴다.
-//      🔴 QTabletEvent 는 쓰지 않는다 — wintab32 를 요구한다(docs/08 3.2).
+//   3. WM_POINTER 를 앱 전역 네이티브 이벤트 필터에서 직접 받아 `platform/win` 의 PointerInput 에
+//      넘긴다. 🔴 QTabletEvent 는 쓰지 않는다 — wintab32 를 요구한다(docs/08 3.2).
+//      ⚠️ 캔버스에 자기 HWND 를 주지 않는다(WA_NativeWindow 금지). 자식 HWND 는 부모 HWND 에
+//      그려지는 형제(도크·상태 표시줄)를 덮어 버린다(실측). 그래서 메시지는 최상위 창 HWND 로
+//      오고, 필터가 캔버스 영역 안의 것만 골라 낸다. PointerInput 의 ViewTransform 은 최상위 창
+//      물리 클라이언트 좌표 기준이라, 위젯 좌표 기준 view_ 에 캔버스 오프셋을 더한 사본을 준다.
 //   ✗ 발행 코드가 없다. 획은 `app::LiveStroke` → `app::StrokeEntry` 로 흐른다.
 //      이 파일에서 새로 쓴 기록 코드는 **0줄**이다(docs/08 3.3).
 //
@@ -25,11 +29,13 @@
 #include <mari/win/input/pointer_input.hpp>
 #include <mari/win/input/view_transform.hpp>
 
+#include <QAbstractNativeEventFilter>
 #include <QImage>
 #include <QWidget>
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace mari::ui {
 
@@ -44,7 +50,9 @@ struct LatencyStats {
     u64 over16 = 0;
 };
 
-class CanvasWidget final : public QWidget, private mari::win::IPointerTarget {
+class CanvasWidget final : public QWidget,
+                           private mari::win::IPointerTarget,
+                           private QAbstractNativeEventFilter {
     Q_OBJECT
 public:
     explicit CanvasWidget(QWidget* parent = nullptr);
@@ -86,7 +94,9 @@ protected:
     void paintEvent(QPaintEvent* e) override;
     void resizeEvent(QResizeEvent* e) override;
     void showEvent(QShowEvent* e) override;
-    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+    void moveEvent(QMoveEvent* e) override;
+    /// QAbstractNativeEventFilter — 최상위 창 HWND 의 WM_POINTER 를 Qt 보다 먼저 본다.
+    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
     void wheelEvent(QWheelEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
@@ -106,6 +116,12 @@ private:
     /// 예약된 캔버스 영역을 백킹 이미지에 합성한다. paintEvent 가 부른다.
     void compositePending();
     void applyView();
+    /// PointerInput 에 뷰를 넘긴다(캔버스 오프셋을 더한 최상위 창 좌표 기준).
+    void pushViewToPointer();
+    /// 최상위 창 클라이언트 물리 px 기준으로 이 위젯의 원점.
+    [[nodiscard]] QPointF physOffset() const;
+    /// 최상위 창 클라이언트 물리 px 기준으로 이 위젯의 사각형.
+    [[nodiscard]] QRectF physRect() const;
     [[nodiscard]] f64 dpr() const;
     [[nodiscard]] QRect canvasToWidgetRect(const Rect& r) const;
     [[nodiscard]] QTransform canvasToWidget() const;
@@ -115,11 +131,15 @@ private:
     std::unique_ptr<app::LiveStroke> live_;
     mari::win::PointerInput pointer_;
     mari::win::ViewTransform view_;
-    QImage backing_;           ///< 캔버스 크기, RGBA8888(straight alpha). 합성 결과
+    QImage backing_;           ///< 캔버스 크기, ARGB32 premultiplied. 합성 결과
+    std::vector<u8> straight_; ///< 합성기 출력(straight RGBA) 임시 버퍼. 더티 영역 크기만큼
     Rect pendingComposite_{};  ///< 아직 백킹에 합성하지 않은 캔버스 영역
     u64 pendingInputNs_ = 0;   ///< 화면에 아직 안 오른 가장 이른 입력 시각. 0 이면 없음
     LatencyStats latency_{};
     bool attached_ = false;
+    HWND topHwnd_ = nullptr;
+    bool needFit_ = true;      ///< 레이아웃이 실제 크기를 주면 한 번 fitToView()
+    u32 bypassId_ = 0;         ///< Qt 에 넘긴(그리기 아닌) 포인터 id
     // 마우스 가운데 버튼 팬
     bool panning_ = false;
     QPointF panLast_{};

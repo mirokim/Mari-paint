@@ -5,6 +5,7 @@
 //   .ora  : stack.xml 의 **첫 자식이 가장 위** (OpenRaster 스펙)
 // 그래서 쓸 때도 읽을 때도 한 번씩 뒤집는다. 이걸 빠뜨리면 그림이 뒤집혀 보인다.
 #include <mari/ora/ora.hpp>
+#include <mari/core/fs.hpp>
 
 #include <mari/ora/composite_op.hpp>
 #include <mari/ora/image.hpp>
@@ -247,7 +248,7 @@ struct Reader {
 // ── 파일 유틸 ────────────────────────────────────────────────────────────
 
 Result<std::vector<u8>> readFileBytes(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::FILE* f = fopenUtf8(path, "rb");
     if (f == nullptr)
         return Err("파일을 열 수 없다: " + path, ErrorCode::IoError);
     if (std::fseek(f, 0, SEEK_END) != 0) {
@@ -270,7 +271,7 @@ Result<std::vector<u8>> readFileBytes(const std::string& path) {
 }
 
 Result<void> writeFileBytes(const std::string& path, const u8* data, usize size) {
-    std::FILE* f = std::fopen(path.c_str(), "wb");
+    std::FILE* f = fopenUtf8(path, "wb");
     if (f == nullptr)
         return Err("파일을 만들 수 없다: " + path, ErrorCode::IoError);
     if (size > 0 && std::fwrite(data, 1, size, f) != size) {
