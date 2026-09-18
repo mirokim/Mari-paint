@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QWidget>
 
+#include <functional>
 #include <vector>
 
 class QLineEdit;
@@ -13,6 +14,7 @@ class QToolButton;
 namespace mari::ui {
 
 class ColorWheel;
+class FgBgSwatch;
 
 class ColorPanel final : public QWidget {
     Q_OBJECT
@@ -37,8 +39,7 @@ private:
     void updateFgBgButtons();
 
     ColorWheel* wheel_ = nullptr;
-    QToolButton* fgButton_ = nullptr;
-    QToolButton* bgButton_ = nullptr;
+    FgBgSwatch* swatch_ = nullptr;
     QLineEdit* hex_ = nullptr;
     QWidget* recentBox_ = nullptr;
     std::vector<QColor> recent_;

@@ -6,12 +6,14 @@
 
 #include <mari/app/document.hpp>
 
+#include <QPixmap>
 #include <QWidget>
 
 class QComboBox;
 class QListWidget;
 class QListWidgetItem;
 class QSlider;
+class QSpinBox;
 class QToolButton;
 
 namespace mari::ui {
@@ -29,6 +31,7 @@ public:
     [[nodiscard]] bool busy() const noexcept { return busy_; }
 
     void addLayer();
+    void duplicateLayer();
     void removeLayer();
     void moveActive(int delta); ///< +1 위로, -1 아래로
 
@@ -43,12 +46,14 @@ private:
     void onRowsMoved();
     void syncControlsToActive();
     [[nodiscard]] LayerPtr activeLayer() const;
-    [[nodiscard]] QIcon thumbnailFor(const Layer& l) const;
+    [[nodiscard]] QPixmap thumbnailFor(const Layer& l) const;
+    void fillItem(QListWidgetItem& item, const Layer& l) const;
     void markDirty();
 
     app::Document* doc_ = nullptr;
     QComboBox* blend_ = nullptr;
     QSlider* opacity_ = nullptr;
+    QSpinBox* opacitySpin_ = nullptr;
     QToolButton* lock_ = nullptr;
     QToolButton* alphaLock_ = nullptr;
     QListWidget* list_ = nullptr;

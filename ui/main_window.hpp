@@ -23,6 +23,7 @@ class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
 class QSlider;
+class QSpinBox;
 class QToolBar;
 class QTimer;
 
@@ -84,14 +85,27 @@ private:
     QSlider* sizeSlider_ = nullptr;
     QDoubleSpinBox* sizeSpin_ = nullptr;
     QSlider* opacitySlider_ = nullptr;
+    QSpinBox* opacitySpin_ = nullptr;
     QComboBox* smoothingCombo_ = nullptr;
     QActionGroup* toolGroup_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     QAction* debugStatusAction_ = nullptr;
+    struct ViewActions {
+        QAction* zoomIn = nullptr;
+        QAction* zoomOut = nullptr;
+        QAction* zoomReset = nullptr;
+        QAction* fit = nullptr;
+        QAction* rotL = nullptr;
+        QAction* rotR = nullptr;
+        QAction* mirror = nullptr;
+        QAction* panels = nullptr;
+    } viewActions_;
     bool syncingSize_ = false;
     QTimer* thumbTimer_ = nullptr;
 
+    QLabel* statusToolIcon_ = nullptr;
+    QString statusToolIconName_;
     QLabel* statusMain_ = nullptr;
     QLabel* statusDebug_ = nullptr;
     QLabel* statusView_ = nullptr;

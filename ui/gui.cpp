@@ -28,6 +28,12 @@ void heapCheck(const char* where) {
 }
 } // namespace
 
+// 아이콘 리소스(정적 라이브러리 안의 .qrc 는 링커가 버릴 수 있다 — 명시 초기화).
+// Q_INIT_RESOURCE 는 전역 함수를 선언하므로 네임스페이스 밖에서 불러야 한다.
+static void initIconResources() {
+    Q_INIT_RESOURCE(icons);
+}
+
 namespace mari::ui {
 
 int runGui(int argc, char** argv) {
@@ -85,6 +91,33 @@ int runGui(int argc, char** argv) {
         pal.setColor(QPalette::Disabled, QPalette::WindowText, QColor(110, 110, 110));
         QApplication::setPalette(pal);
     }
+    initIconResources();
+    // 도구상자·툴바·도크·슬라이더의 시각 규칙. Fusion 다크 팔레트 위에 얹는다(docs/09 2차 검토 3.3).
+    qApp->setStyleSheet(R"(
+QToolBar#tools { spacing: 2px; padding: 4px 4px; border: none; }
+QToolBar#tools QToolButton { width: 32px; height: 32px; border-radius: 4px; border: none; padding: 0; }
+QToolBar#tools QToolButton:hover   { background: #3a3a3a; }
+QToolBar#tools QToolButton:checked { background: #3d7bd9; }
+QToolBar#tools QToolButton:pressed { background: #2f63b0; }
+QToolBar#options { spacing: 6px; padding: 2px 6px; border-bottom: 1px solid #1e1e1e; }
+QToolBar#options QToolButton { border-radius: 4px; padding: 3px; border: none; }
+QToolBar#options QToolButton:hover { background: #3a3a3a; }
+QToolBar#options QToolButton:pressed { background: #2f63b0; }
+QToolBar#options QToolButton:disabled { background: transparent; }
+QToolBar::separator { width: 1px; background: #1e1e1e; margin: 4px 4px; }
+mari--ui--LayerPanel QToolButton, mari--ui--ColorPanel QToolButton { border: none; border-radius: 3px; padding: 4px; }
+mari--ui--LayerPanel QToolButton:hover   { background: #3a3a3a; }
+mari--ui--LayerPanel QToolButton:checked { background: #3d7bd9; }
+mari--ui--LayerPanel QToolButton:disabled { background: transparent; }
+QDockWidget::title { background: #232323; padding: 4px 8px; }
+QSlider::groove:horizontal { height: 4px; background: #1e1e1e; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #3d7bd9; border-radius: 2px; }
+QSlider::add-page:horizontal { background: #1e1e1e; border-radius: 2px; }
+QSlider::handle:horizontal { width: 12px; margin: -5px 0; background: #dcdcdc; border-radius: 6px; }
+QSlider::handle:horizontal:hover { background: #ffffff; }
+QStatusBar { border-top: 1px solid #1e1e1e; }
+QStatusBar::item { border: none; }
+)");
     QApplication::setApplicationName("Mari Paint");
     QApplication::setOrganizationName("Mari");
 

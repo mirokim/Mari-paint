@@ -1,0 +1,35 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="arrow-back-up.svg">icons/arrow-back-up.svg</file>
+    <file alias="arrow-down.svg">icons/arrow-down.svg</file>
+    <file alias="arrow-forward-up.svg">icons/arrow-forward-up.svg</file>
+    <file alias="arrow-merge.svg">icons/arrow-merge.svg</file>
+    <file alias="arrow-up.svg">icons/arrow-up.svg</file>
+    <file alias="arrows-exchange.svg">icons/arrows-exchange.svg</file>
+    <file alias="arrows-maximize.svg">icons/arrows-maximize.svg</file>
+    <file alias="brush.svg">icons/brush.svg</file>
+    <file alias="color-picker.svg">icons/color-picker.svg</file>
+    <file alias="copy.svg">icons/copy.svg</file>
+    <file alias="device-floppy.svg">icons/device-floppy.svg</file>
+    <file alias="eraser.svg">icons/eraser.svg</file>
+    <file alias="eye.svg">icons/eye.svg</file>
+    <file alias="eye-off.svg">icons/eye-off.svg</file>
+    <file alias="file-plus.svg">icons/file-plus.svg</file>
+    <file alias="flip-horizontal.svg">icons/flip-horizontal.svg</file>
+    <file alias="folder-open.svg">icons/folder-open.svg</file>
+    <file alias="hand-stop.svg">icons/hand-stop.svg</file>
+    <file alias="layout-sidebar-right-collapse.svg">icons/layout-sidebar-right-collapse.svg</file>
+    <file alias="layout-sidebar-right-expand.svg">icons/layout-sidebar-right-expand.svg</file>
+    <file alias="lock.svg">icons/lock.svg</file>
+    <file alias="lock-open.svg">icons/lock-open.svg</file>
+    <file alias="rotate.svg">icons/rotate.svg</file>
+    <file alias="rotate-clockwise.svg">icons/rotate-clockwise.svg</file>
+    <file alias="settings.svg">icons/settings.svg</file>
+    <file alias="square-half.svg">icons/square-half.svg</file>
+    <file alias="square-plus.svg">icons/square-plus.svg</file>
+    <file alias="trash.svg">icons/trash.svg</file>
+    <file alias="zoom-in.svg">icons/zoom-in.svg</file>
+    <file alias="zoom-out.svg">icons/zoom-out.svg</file>
+    <file alias="zoom-reset.svg">icons/zoom-reset.svg</file>
+  </qresource>
+</RCC>

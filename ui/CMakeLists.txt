@@ -7,7 +7,7 @@
 # Qt 가 없으면 이 디렉터리는 조용히 빠진다. 헤드리스 CLI·테스트는 Qt 없이 그대로 돈다
 # (Linux CI 가 그렇다). mari-paint 는 MARI_HAS_GUI 없이 빌드되고, 인자 없이 뜨면 사용법을 낸다.
 
-find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.5 QUIET COMPONENTS Core Gui Widgets Svg)
 if(NOT Qt6_FOUND)
     message(STATUS "Mari: Qt6 를 찾지 못했다 — GUI 없이 빌드한다 (CMAKE_PREFIX_PATH 에 Qt 경로를 주면 켜진다)")
     set(MARI_HAS_GUI OFF CACHE INTERNAL "GUI 포함 여부")
@@ -17,6 +17,7 @@ set(MARI_HAS_GUI ON CACHE INTERNAL "GUI 포함 여부")
 message(STATUS "Mari: Qt ${Qt6_VERSION} — GUI 를 빌드한다 (${Qt6_DIR})")
 
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 set(MARI_UI_SOURCES
     canvas_widget.cpp
@@ -27,6 +28,11 @@ set(MARI_UI_SOURCES
     color_panel.hpp
     layer_panel.cpp
     layer_panel.hpp
+    layer_row_delegate.cpp
+    layer_row_delegate.hpp
+    icons.cpp
+    icons.hpp
+    icons.qrc
     main_window.cpp
     main_window.hpp
     gui.cpp
@@ -37,7 +43,7 @@ add_library(mari_ui STATIC ${MARI_UI_SOURCES})
 target_include_directories(mari_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(mari_ui
     PUBLIC mari::common mari::app mari::record mari::win_input
-           Qt6::Core Qt6::Gui Qt6::Widgets)
+           Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
 target_compile_definitions(mari_ui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 if(MSVC)
     # Qt 헤더는 /W4 에서 시끄럽다. 우리 코드의 경고는 그대로 둔다.

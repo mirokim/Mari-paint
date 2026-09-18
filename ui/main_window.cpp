@@ -3,6 +3,7 @@
 
 #include "canvas_widget.hpp"
 #include "color_panel.hpp"
+#include "icons.hpp"
 #include "layer_panel.hpp"
 
 #include <mari/brush/builtin.hpp>
@@ -21,6 +22,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSlider>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolBar>
@@ -97,9 +99,9 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
         if (o.recorded) ++recordedStrokes_;
         if (o.rolledBack) {
             ++rolledBack_;
-            statusBar()->showMessage("🔴 저널에 기록하지 못해 이 획을 되돌렸다 (docs/06 결정 ④)", 8000);
+            statusBar()->showMessage("[기록 실패] 저널에 기록하지 못해 이 획을 되돌렸다 (docs/06 결정 ④)", 8000);
         } else if (!o.undoComplete) {
-            statusBar()->showMessage("⚠️ 실행취소 범위가 칠한 범위를 다 덮지 못했다", 5000);
+            statusBar()->showMessage("[경고] 실행취소 범위가 칠한 범위를 다 덮지 못했다", 5000);
         } else if (!o.engineNote.empty()) {
             statusBar()->showMessage(QString::fromStdString(o.engineNote), 5000);
         }
@@ -154,16 +156,16 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::buildMenus() {
     QMenu* file = menuBar()->addMenu("파일(&F)");
-    file->addAction("새 문서(&N)...", QKeySequence::New, this, &MainWindow::newDocument);
-    file->addAction("열기(&O)...", QKeySequence::Open, this, &MainWindow::openDocument);
-    file->addAction("저장(&S)", QKeySequence::Save, this, [this] { saveDocument(false); });
+    file->addAction(themedIcon("file-plus"), "새 문서(&N)...", QKeySequence::New, this, &MainWindow::newDocument);
+    file->addAction(themedIcon("folder-open"), "열기(&O)...", QKeySequence::Open, this, &MainWindow::openDocument);
+    file->addAction(themedIcon("device-floppy"), "저장(&S)", QKeySequence::Save, this, [this] { saveDocument(false); });
     file->addAction("다른 이름으로 저장(&A)...", QKeySequence::SaveAs, this, [this] { saveDocument(true); });
     file->addSeparator();
     file->addAction("종료(&Q)", QKeySequence::Quit, this, &QWidget::close);
 
     QMenu* edit = menuBar()->addMenu("편집(&E)");
-    undoAction_ = edit->addAction("실행 취소(&U)", QKeySequence::Undo, this, &MainWindow::undo);
-    redoAction_ = edit->addAction("다시 실행(&R)", QKeySequence::Redo, this, &MainWindow::redo);
+    undoAction_ = edit->addAction(themedIcon("arrow-back-up", 20), "실행 취소(&U)", QKeySequence::Undo, this, &MainWindow::undo);
+    redoAction_ = edit->addAction(themedIcon("arrow-forward-up", 20), "다시 실행(&R)", QKeySequence::Redo, this, &MainWindow::redo);
     redoAction_->setShortcuts({QKeySequence::Redo, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
     edit->addSeparator();
     edit->addAction("붓 크게  ]", QKeySequence(Qt::Key_BracketRight), this, [this] { stepBrushSize(+1); });
@@ -203,21 +205,25 @@ void MainWindow::buildMenus() {
     });
 
     QMenu* view = menuBar()->addMenu("보기(&V)");
-    view->addAction("확대", QKeySequence::ZoomIn, this,
-                    [this] { canvas_->zoomBy(1.25, QRectF(canvas_->rect()).center()); });
-    view->addAction("축소", QKeySequence::ZoomOut, this,
-                    [this] { canvas_->zoomBy(0.8, QRectF(canvas_->rect()).center()); });
-    view->addAction("100%", QKeySequence(Qt::CTRL | Qt::Key_1), this, [this] { canvas_->resetView(); });
-    view->addAction("창에 맞춤", QKeySequence(Qt::CTRL | Qt::Key_0), this, [this] { canvas_->fitToView(); });
+    viewActions_.zoomIn = view->addAction(themedIcon("zoom-in", 20), "확대", QKeySequence::ZoomIn, this,
+                                          [this] { canvas_->zoomBy(1.25, QRectF(canvas_->rect()).center()); });
+    viewActions_.zoomOut = view->addAction(themedIcon("zoom-out", 20), "축소", QKeySequence::ZoomOut, this,
+                                           [this] { canvas_->zoomBy(0.8, QRectF(canvas_->rect()).center()); });
+    viewActions_.zoomReset = view->addAction(themedIcon("zoom-reset", 20), "100%", QKeySequence(Qt::CTRL | Qt::Key_1),
+                                             this, [this] { canvas_->resetView(); });
+    viewActions_.fit = view->addAction(themedIcon("arrows-maximize", 20), "창에 맞춤", QKeySequence(Qt::CTRL | Qt::Key_0),
+                                       this, [this] { canvas_->fitToView(); });
     view->addSeparator();
-    view->addAction("왼쪽으로 회전  Ctrl+[", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), this,
-                    [this] { canvas_->rotateBy(-15.0); });
-    view->addAction("오른쪽으로 회전  Ctrl+]", QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this,
-                    [this] { canvas_->rotateBy(15.0); });
-    view->addAction("회전 초기화  5", QKeySequence(Qt::Key_5), this, [this] { canvas_->resetRotation(); });
-    view->addAction("미러 보기  M", QKeySequence(Qt::Key_M), this, [this] { canvas_->toggleMirror(); });
+    viewActions_.rotL = view->addAction(themedIcon("rotate", 20), "왼쪽으로 회전", QKeySequence(Qt::CTRL | Qt::Key_BracketLeft),
+                                        this, [this] { canvas_->rotateBy(-15.0); });
+    viewActions_.rotR = view->addAction(themedIcon("rotate-clockwise", 20), "오른쪽으로 회전",
+                                        QKeySequence(Qt::CTRL | Qt::Key_BracketRight), this, [this] { canvas_->rotateBy(15.0); });
+    view->addAction("회전 초기화", QKeySequence(Qt::Key_5), this, [this] { canvas_->resetRotation(); });
+    viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::Key_M), this,
+                                          [this] { canvas_->toggleMirror(); });
     view->addSeparator();
-    view->addAction("패널 숨김/표시  Tab", QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
+    viewActions_.panels = view->addAction(themedIcon("layout-sidebar-right-collapse", 20), "패널 숨김/표시",
+                                          QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
     debugStatusAction_ = view->addAction("진단 상태 표시(지연·저널)");
     debugStatusAction_->setCheckable(true);
     debugStatusAction_->setChecked(qEnvironmentVariableIsSet("MARI_GUI_TRACE"));
@@ -229,14 +235,16 @@ void MainWindow::buildMenus() {
 void MainWindow::buildToolbars() {
     // 왼쪽 세로 도구상자 — B/E/I/H
     toolsBar_ = new QToolBar("도구", this);
+    toolsBar_->setObjectName("tools");
     toolsBar_->setMovable(false);
     toolsBar_->setOrientation(Qt::Vertical);
-    toolsBar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolsBar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolsBar_->setIconSize(QSize(22, 22));
     addToolBar(Qt::LeftToolBarArea, toolsBar_);
     toolGroup_ = new QActionGroup(this);
     toolGroup_->setExclusive(true);
-    const auto addTool = [&](const char* text, const char* tip, Qt::Key key, Tool t) {
-        QAction* a = toolsBar_->addAction(text);
+    const auto addTool = [&](const char* icon, const char* text, const char* tip, Qt::Key key, Tool t) {
+        QAction* a = toolsBar_->addAction(themedIcon(icon, 22), text);
         a->setCheckable(true);
         a->setToolTip(tip);
         a->setShortcut(QKeySequence(key));
@@ -245,16 +253,19 @@ void MainWindow::buildToolbars() {
         connect(a, &QAction::triggered, this, [this, t] { canvas_->setTool(t); });
         return a;
     };
-    addTool("붓", "붓 (B)", Qt::Key_B, Tool::Brush)->setChecked(true);
-    addTool("지움", "지우개 (E)", Qt::Key_E, Tool::Eraser);
-    addTool("스포", "스포이드 (I · Alt)", Qt::Key_I, Tool::Eyedropper);
-    addTool("손", "손 (H · Space)", Qt::Key_H, Tool::Hand);
+    addTool("brush", "붓", "붓 (B)", Qt::Key_B, Tool::Brush)->setChecked(true);
+    addTool("eraser", "지우개", "지우개 (E)", Qt::Key_E, Tool::Eraser);
+    addTool("color-picker", "스포이드", "스포이드 (I · Alt)", Qt::Key_I, Tool::Eyedropper);
+    addTool("hand-stop", "손", "손 (H · Space)", Qt::Key_H, Tool::Hand);
 
     // 상단 옵션 툴바 — 붓 프리셋 · 크기 · 불투명도 · 보정 · 실행취소
     optionsBar_ = addToolBar("옵션");
+    optionsBar_->setObjectName("options");
     optionsBar_->setMovable(false);
+    optionsBar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    optionsBar_->setIconSize(QSize(20, 20));
 
-    optionsBar_->addWidget(new QLabel(" 붓 "));
+    optionsBar_->addWidget(new QLabel("붓"));
     brushCombo_ = new QComboBox(optionsBar_);
     for (const brush::MariBrushPreset& p : brushes_) {
         brushCombo_->addItem(QString::fromStdString(p.name));
@@ -267,16 +278,18 @@ void MainWindow::buildToolbars() {
         }
     });
 
-    optionsBar_->addWidget(new QLabel(" 크기 "));
+    optionsBar_->addSeparator();
+    optionsBar_->addWidget(new QLabel("크기"));
     sizeSlider_ = new QSlider(Qt::Horizontal, optionsBar_);
     sizeSlider_->setRange(0, kSliderMax);
-    sizeSlider_->setFixedWidth(140);
+    sizeSlider_->setFixedWidth(160);
     optionsBar_->addWidget(sizeSlider_);
     sizeSpin_ = new QDoubleSpinBox(optionsBar_);
     sizeSpin_->setRange(kSizeMin, kSizeMax);
     sizeSpin_->setDecimals(1);
     sizeSpin_->setSuffix(" px");
-    sizeSpin_->setFixedWidth(90);
+    sizeSpin_->setFixedWidth(84);
+    sizeSpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     optionsBar_->addWidget(sizeSpin_);
     connect(sizeSlider_, &QSlider::valueChanged, this, [this](int v) {
         if (!syncingSize_) setBrushSize(sliderToSize(v));
@@ -285,16 +298,28 @@ void MainWindow::buildToolbars() {
         if (!syncingSize_) setBrushSize(v);
     });
 
-    optionsBar_->addWidget(new QLabel(" 불투명 "));
+    optionsBar_->addSeparator();
+    optionsBar_->addWidget(new QLabel("불투명도"));
     opacitySlider_ = new QSlider(Qt::Horizontal, optionsBar_);
     opacitySlider_->setRange(1, 100);
     opacitySlider_->setValue(100);
-    opacitySlider_->setFixedWidth(100);
+    opacitySlider_->setFixedWidth(120);
     opacitySlider_->setToolTip("불투명도 (Shift+[ · Shift+])");
     optionsBar_->addWidget(opacitySlider_);
-    connect(opacitySlider_, &QSlider::valueChanged, this, [this](int) { refreshStatus(); });
+    opacitySpin_ = new QSpinBox(optionsBar_);
+    opacitySpin_->setRange(1, 100);
+    opacitySpin_->setSuffix("%");
+    opacitySpin_->setFixedWidth(56);
+    opacitySpin_->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    optionsBar_->addWidget(opacitySpin_);
+    connect(opacitySlider_, &QSlider::valueChanged, this, [this](int v) {
+        if (opacitySpin_->value() != v) opacitySpin_->setValue(v);
+        refreshStatus();
+    });
+    connect(opacitySpin_, &QSpinBox::valueChanged, this, [this](int v) { opacitySlider_->setValue(v); });
 
-    optionsBar_->addWidget(new QLabel(" 보정 "));
+    optionsBar_->addSeparator();
+    optionsBar_->addWidget(new QLabel("보정"));
     smoothingCombo_ = new QComboBox(optionsBar_);
     smoothingCombo_->addItems({"끔", "약함", "보통", "강함"});
     optionsBar_->addWidget(smoothingCombo_);
@@ -302,6 +327,19 @@ void MainWindow::buildToolbars() {
     optionsBar_->addSeparator();
     optionsBar_->addAction(undoAction_);
     optionsBar_->addAction(redoAction_);
+    optionsBar_->addSeparator();
+    optionsBar_->addAction(viewActions_.zoomOut);
+    optionsBar_->addAction(viewActions_.zoomReset);
+    optionsBar_->addAction(viewActions_.zoomIn);
+    optionsBar_->addAction(viewActions_.fit);
+    optionsBar_->addSeparator();
+    optionsBar_->addAction(viewActions_.rotL);
+    optionsBar_->addAction(viewActions_.rotR);
+    optionsBar_->addAction(viewActions_.mirror);
+    auto* spacer = new QWidget(optionsBar_);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    optionsBar_->addWidget(spacer);
+    optionsBar_->addAction(viewActions_.panels);
 
     setBrushSize(brushes_.empty() ? 10.0 : brushes_.front().tip.diameter);
     if (!brushes_.empty()) {
@@ -321,8 +359,8 @@ void MainWindow::buildDocks() {
     layerPanel_ = new LayerPanel(layerDock_);
     layerDock_->setWidget(layerPanel_);
     addDockWidget(Qt::RightDockWidgetArea, layerDock_);
-    resizeDocks({colorDock_, layerDock_}, {280, 400}, Qt::Vertical);
-    resizeDocks({colorDock_}, {260}, Qt::Horizontal);
+    resizeDocks({colorDock_, layerDock_}, {330, 400}, Qt::Vertical);
+    resizeDocks({colorDock_}, {280}, Qt::Horizontal);
 
     connect(layerPanel_, &LayerPanel::layersChanged, this, [this] {
         canvas_->invalidateCanvas();
@@ -333,12 +371,16 @@ void MainWindow::buildDocks() {
 }
 
 void MainWindow::buildStatusBar() {
+    statusToolIcon_ = new QLabel(this);
     statusMain_ = new QLabel(this);
     statusDebug_ = new QLabel(this);
+    statusDebug_->setMaximumWidth(640);
     statusView_ = new QLabel(this);
+    statusBar()->addWidget(statusToolIcon_);
     statusBar()->addWidget(statusMain_, 1);
-    statusBar()->addPermanentWidget(statusView_);
     statusBar()->addPermanentWidget(statusDebug_);
+    statusBar()->addPermanentWidget(statusView_);
+    statusBar()->setSizeGripEnabled(false);
 }
 
 // ── 문서 ─────────────────────────────────────────────────────────────────
@@ -519,11 +561,16 @@ void MainWindow::refreshStatus() {
         }
     }
     const char* toolName = "붓";
+    const char* toolIcon = "brush";
     switch (canvas_->tool()) {
-    case Tool::Brush: toolName = "붓"; break;
-    case Tool::Eraser: toolName = "지우개"; break;
-    case Tool::Eyedropper: toolName = "스포이드"; break;
-    case Tool::Hand: toolName = "손"; break;
+    case Tool::Brush: toolName = "붓"; toolIcon = "brush"; break;
+    case Tool::Eraser: toolName = "지우개"; toolIcon = "eraser"; break;
+    case Tool::Eyedropper: toolName = "스포이드"; toolIcon = "color-picker"; break;
+    case Tool::Hand: toolName = "손"; toolIcon = "hand-stop"; break;
+    }
+    if (statusToolIconName_ != toolIcon) {
+        statusToolIconName_ = toolIcon;
+        statusToolIcon_->setPixmap(themedIcon(toolIcon, 14).pixmap(14, 14));
     }
     statusMain_->setText(QString("%1 · %2 px · %3% · %4")
                              .arg(toolName)
@@ -542,7 +589,7 @@ void MainWindow::refreshStatus() {
     if (debug) {
         QString rec = "기록 없음";
         if (doc != nullptr && doc->recorder() != nullptr) {
-            rec = doc->recordingBroken() ? "기록 🔴 고장" : "저널 " + journalPath_;
+            rec = doc->recordingBroken() ? "기록 [고장]" : "저널 " + journalPath_;
         }
         const LatencyStats& lat = canvas_->latency();
         QString latText = "펜→화면 —";
@@ -555,9 +602,8 @@ void MainWindow::refreshStatus() {
                           .arg(lat.samples);
         }
         // 🔴 입력 API 는 항상 windows-ink 다. 다른 값이 뜨면 설계 위반이다(docs/03 3절).
-        statusDebug_->setText(QString("입력 %1 · %2 · 획 %3/기록 %4/롤백 %5 · %6")
-                                  .arg(mari::win::PointerInput::inputApiName())
-                                  .arg(rec)
+        statusDebug_->setToolTip(QString("입력 %1 · %2").arg(mari::win::PointerInput::inputApiName()).arg(rec));
+        statusDebug_->setText(QString("획 %1 · 기록 %2 · 롤백 %3 · %4")
                                   .arg(strokes_)
                                   .arg(recordedStrokes_)
                                   .arg(rolledBack_)
