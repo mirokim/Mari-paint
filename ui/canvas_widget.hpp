@@ -30,6 +30,7 @@
 #include <mari/win/input/view_transform.hpp>
 
 #include <QAbstractNativeEventFilter>
+#include <QPainterPath>
 #include <QColor>
 #include <QImage>
 #include <QRegion>
@@ -39,6 +40,8 @@
 #include <functional>
 #include <memory>
 #include <vector>
+
+class QTimer;
 
 namespace mari::ui {
 
@@ -54,7 +57,10 @@ struct LatencyStats {
 };
 
 /// 캔버스 도구. 지우개는 토글이 아니라 도구다(페인팅 앱 관례). 펜 뒤집기는 여전히 우선한다.
-enum class Tool { Brush, Eraser, Eyedropper, Hand };
+enum class Tool { Brush, Eraser, Eyedropper, Hand, Fill, SelectRect, SelectEllipse, SelectLasso, SelectWand };
+[[nodiscard]] inline bool isSelectionTool(Tool t) noexcept {
+    return t == Tool::SelectRect || t == Tool::SelectEllipse || t == Tool::SelectLasso || t == Tool::SelectWand;
+}
 
 /// 태블릿 테스터용 마지막 펜 샘플.
 struct PenReadout {
@@ -100,6 +106,15 @@ public:
     /// 캔버스 점을 위젯 중앙에 놓는다(내비게이터).
     void centerOn(const QPointF& canvasPt);
 
+    // ── 선택 · 채우기 ────────────────────────────────────────────────────
+    /// 마술봉·페인트통 허용 오차(0..255)와 틈 닫기(px). 툴바가 넣는다.
+    void setFloodOptions(int tolerance, int gapClose) { floodTolerance_ = tolerance; floodGap_ = gapClose; }
+    void selectAll();
+    void deselect();
+    void invertSelection();
+    /// 문서의 선택 마스크가 바깥에서 바뀌었다 — 점선을 다시 만든다.
+    void selectionChangedExternally();
+
     // ── 뷰 ───────────────────────────────────────────────────────────────
     [[nodiscard]] const mari::win::ViewState& viewState() const noexcept { return view_.state(); }
     /// 화면 점(논리 px)을 중심으로 배율을 곱한다.
@@ -130,6 +145,10 @@ signals:
     void paletteRequested(const QPoint& globalPos);
     /// Shift+드래그 붓 크기 제스처. 새 지름(캔버스 px).
     void brushSizeGesture(f64 diameter);
+    /// 선택이 바뀌었다(메뉴 활성/상태줄).
+    void selectionChanged();
+    /// 페인트통이 채웠다(썸네일·내비게이터 갱신).
+    void regionFilled();
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -177,6 +196,11 @@ private:
     void updateHoverRect();
     /// viewDirty_ 를 viewCache_ 에 반영한다. paintEvent 가 부른다.
     void renderViewCache();
+    /// 선택 마스크 → 점선 경로(캔버스 좌표). 선택이 바뀔 때만.
+    void rebuildSelectionOutline();
+    void applySelection(SelectionMask mask, Qt::KeyboardModifiers mods);
+    void finishSelectionDrag(const QPointF& logicalPos, Qt::KeyboardModifiers mods);
+    void bucketFill(const QPointF& logicalPos);
     void invalidateView();  ///< 뷰가 바뀌었다 — 캐시 전체를 버린다
 
     app::Document* doc_ = nullptr;
@@ -215,6 +239,17 @@ private:
     QPointF sizeDragStart_{};
     f64 sizeDragStartDiameter_ = 0.0;
     bool shiftDown_ = false;
+    // 선택 도구
+    bool selDrag_ = false;
+    QPointF selStart_{};       ///< 논리 px
+    QPointF selCur_{};
+    std::vector<QPointF> lasso_; ///< 캔버스 px
+    QPainterPath selOutline_;  ///< 캔버스 좌표
+    bool hasSelection_ = false;
+    int antsPhase_ = 0;
+    QTimer* antsTimer_ = nullptr;
+    int floodTolerance_ = 32;
+    int floodGap_ = 0;
     // 압력 곡선 · 테스터
     std::array<f32, 256> pressureLut_{};
     bool hasPressureLut_ = false;

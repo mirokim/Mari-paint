@@ -14,6 +14,11 @@
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QTimer>
+#include <QBitmap>
+#include <QRegion>
+
+#include <mari/app/layer_commands.hpp>
 #include <QWheelEvent>
 
 #include <windowsx.h>
@@ -62,6 +67,15 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
     //    순회하는 **도중에** 목록이 바뀌어 Qt6Widgets 안에서 죽는다(실측: 실행의 절반이 show() 에서
     //    AV). 생성자는 네이티브 이벤트 밖이다. attached_ 가 false 인 동안 필터는 아무것도 안 한다.
     QCoreApplication::instance()->installNativeEventFilter(this);
+    antsTimer_ = new QTimer(this);
+    antsTimer_->setInterval(120);
+    connect(antsTimer_, &QTimer::timeout, this, [this] {
+        antsPhase_ = (antsPhase_ + 1) % 8;
+        if (hasSelection_) {
+            // 점선만 다시 그린다 — 경계 상자 영역(캐시 블릿이라 값싸다).
+            update(canvasToWidget().mapRect(selOutline_.boundingRect()).toAlignedRect().adjusted(-2, -2, 2, 2));
+        }
+    });
     if (traceOn()) {
         std::fprintf(stderr, "[mari-gui] sizeof(CanvasWidget) in canvas_widget.cpp = %zu (PointerInput %zu, QImage %zu)\n",
                      sizeof(CanvasWidget), sizeof(mari::win::PointerInput), sizeof(QImage));
@@ -99,6 +113,7 @@ void CanvasWidget::setDocument(app::Document* doc) {
     backing_.fill(Qt::transparent);
     straight_.clear();
     pendingComposite_ = Rect{0, 0, sz.width, sz.height};
+    rebuildSelectionOutline();
     // 레이아웃 전(100×30)에 맞추면 캔버스가 구석에 작게 뜬다. 실제 크기가 오면 맞춘다.
     needFit_ = true;
     if (width() > 200 && height() > 200) {
@@ -277,6 +292,39 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
         p.setPen(Qt::white);
         p.drawText(box, Qt::AlignCenter, txt);
     }
+    // 선택 점선(marching ants): 캔버스 좌표 경로를 뷰 변환으로 그린다. 코스메틱 펜이라 줌과 무관하게 1px.
+    if (hasSelection_) {
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setTransform(canvasToWidget());
+        QPen white(Qt::white, 0);
+        p.setPen(white);
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(selOutline_);
+        QPen black(Qt::black, 0, Qt::CustomDashLine);
+        black.setDashPattern({4, 4});
+        black.setDashOffset(antsPhase_);
+        p.setPen(black);
+        p.drawPath(selOutline_);
+        p.resetTransform();
+    }
+    // 드래그 중인 선택 도형 미리보기(논리 좌표).
+    if (selDrag_) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setBrush(QColor(0x3d, 0x7b, 0xd9, 40));
+        p.setPen(QPen(QColor(0x3d, 0x7b, 0xd9), 1, Qt::DashLine));
+        if (tool_ == Tool::SelectRect) {
+            p.drawRect(QRectF(selStart_, selCur_).normalized());
+        } else if (tool_ == Tool::SelectEllipse) {
+            p.drawEllipse(QRectF(selStart_, selCur_).normalized());
+        } else if (tool_ == Tool::SelectLasso && lasso_.size() > 1) {
+            QPainterPath path;
+            const QTransform t = canvasToWidget();
+            path.moveTo(t.map(lasso_.front()));
+            for (std::size_t i = 1; i < lasso_.size(); ++i) path.lineTo(t.map(lasso_[i]));
+            path.closeSubpath();
+            p.drawPath(path);
+        }
+    }
     p.end();
 
     // 펜→화면 지연: 이 프레임이 반영한 가장 이른 입력부터 지금까지.
@@ -371,7 +419,8 @@ bool CanvasWidget::nativeEventFilter(const QByteArray& eventType, void* message,
         ::ScreenToClient(topHwnd_, &pt);
         const bool inside = physRect().contains(QPointF(pt.x, pt.y));
         // 뷰 드래그(Space·손 도구)와 스포이드는 Qt 마우스 이벤트로 처리한다 — 획이 아니다.
-        const bool notAStroke = viewDragActive() || tool_ == Tool::Eyedropper || altEyedropper_ || shiftDown_;
+        const bool notAStroke = viewDragActive() || tool_ == Tool::Eyedropper || altEyedropper_ || shiftDown_ ||
+                                isSelectionTool(tool_) || tool_ == Tool::Fill;
         if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam) || notAStroke) {
             bypassId_ = id;
             return false;
@@ -638,6 +687,8 @@ void CanvasWidget::setTool(Tool t) {
     }
     tool_ = t;
     setCursor(t == Tool::Hand ? Qt::OpenHandCursor : Qt::CrossCursor);
+    selDrag_ = false;
+    lasso_.clear();
     update();
     Q_EMIT toolChanged(t);
 }
@@ -670,6 +721,159 @@ void CanvasWidget::updateHoverRect() {
     update(QRectF(hoverPos_.x() - r, hoverPos_.y() - r, 2 * r, 2 * r).toAlignedRect());
 }
 
+// ── 선택 · 채우기 ─────────────────────────────────────────────────────────
+
+void CanvasWidget::rebuildSelectionOutline() {
+    selOutline_ = QPainterPath();
+    hasSelection_ = false;
+    if (doc_ == nullptr) {
+        antsTimer_->stop();
+        return;
+    }
+    const SelectionMask& sel = doc_->selectionMask();
+    if (sel.isAll() || sel.isEmpty()) {
+        antsTimer_->stop();
+        update();
+        return;
+    }
+    // 마스크(>127) → 1비트 이미지 → QRegion → 사각형 합집합 경로. 선택이 바뀔 때만 한다.
+    const Rect b = sel.bounds().intersected(Rect{0, 0, doc_->canvasSize().width, doc_->canvasSize().height});
+    if (b.isEmpty()) {
+        antsTimer_->stop();
+        update();
+        return;
+    }
+    QImage bits(b.width, b.height, QImage::Format_MonoLSB);
+    bits.fill(0);
+    for (i32 y = 0; y < b.height; ++y) {
+        u8* row = bits.scanLine(y);
+        for (i32 x = 0; x < b.width; ++x) {
+            if (sel.valueAt(b.x + x, b.y + y) > 127) {
+                row[x >> 3] = static_cast<u8>(row[x >> 3] | (1u << (x & 7)));
+            }
+        }
+    }
+    QRegion region(QBitmap::fromImage(bits));
+    region.translate(b.x, b.y);
+    for (const QRect& r : region) {
+        selOutline_.addRect(QRectF(r));
+    }
+    selOutline_ = selOutline_.simplified();
+    hasSelection_ = true;
+    antsTimer_->start();
+    update();
+}
+
+void CanvasWidget::applySelection(SelectionMask mask, Qt::KeyboardModifiers mods) {
+    if (doc_ == nullptr) return;
+    // 수식키 관례: Shift 더하기 · Alt 빼기 · Shift+Alt 교집합 · 없으면 교체.
+    SelectionOp op = SelectionOp::Replace;
+    const bool shift = mods & Qt::ShiftModifier;
+    const bool alt = mods & Qt::AltModifier;
+    if (shift && alt) op = SelectionOp::Intersect;
+    else if (shift) op = SelectionOp::Union;
+    else if (alt) op = SelectionOp::Subtract;
+    if (op == SelectionOp::Replace || doc_->selectionMask().isAll()) {
+        if (op == SelectionOp::Subtract) {
+            // 전체 선택에서 빼기 = 반전한 새 마스크
+            mask.invert();
+        }
+        doc_->setSelectionMask(std::move(mask));
+    } else {
+        SelectionMask cur = doc_->selectionMask();
+        const Result<void> r = cur.combine(mask, op);
+        if (!r.ok()) {
+            Q_EMIT strokeRefused(QString::fromStdString(r.message()));
+            return;
+        }
+        doc_->setSelectionMask(std::move(cur));
+    }
+    rebuildSelectionOutline();
+    Q_EMIT selectionChanged();
+}
+
+void CanvasWidget::finishSelectionDrag(const QPointF& logicalPos, Qt::KeyboardModifiers mods) {
+    if (doc_ == nullptr) return;
+    const Size cs = doc_->canvasSize();
+    const QTransform inv = canvasToWidget().inverted();
+    Result<SelectionMask> made = Err("선택 도구가 아니다", ErrorCode::InvalidArgument);
+    if (tool_ == Tool::SelectRect || tool_ == Tool::SelectEllipse) {
+        const QRectF cr = inv.mapRect(QRectF(selStart_, logicalPos).normalized());
+        const Rect r{static_cast<i32>(std::floor(cr.left())), static_cast<i32>(std::floor(cr.top())),
+                     static_cast<i32>(std::ceil(cr.width())), static_cast<i32>(std::ceil(cr.height()))};
+        if (r.width < 1 || r.height < 1) return;
+        made = tool_ == Tool::SelectRect ? SelectionMask::fromRect(cs, r) : SelectionMask::fromEllipse(cs, r, true);
+    } else if (tool_ == Tool::SelectLasso) {
+        if (lasso_.size() < 3) { lasso_.clear(); return; }
+        std::vector<PointF> pts;
+        pts.reserve(lasso_.size());
+        for (const QPointF& q : lasso_) pts.push_back(PointF{static_cast<f32>(q.x()), static_cast<f32>(q.y())});
+        lasso_.clear();
+        made = SelectionMask::fromPolygon(cs, pts, true);
+    } else if (tool_ == Tool::SelectWand) {
+        const QPointF c = inv.map(logicalPos);
+        const LayerPtr l = doc_->layers().find(doc_->layers().activeLayer());
+        if (!l || l->tiles() == nullptr) return;
+        made = SelectionMask::fromFlood(cs, *l->tiles(), static_cast<i32>(std::floor(c.x())),
+                                        static_cast<i32>(std::floor(c.y())), floodTolerance_, floodGap_);
+    }
+    if (!made.ok()) {
+        Q_EMIT strokeRefused(QString::fromStdString(made.message()));
+        return;
+    }
+    applySelection(std::move(made).value(), mods);
+}
+
+void CanvasWidget::bucketFill(const QPointF& logicalPos) {
+    if (doc_ == nullptr || live_ != nullptr) return;
+    const QPointF c = canvasToWidget().inverted().map(logicalPos);
+    const LayerId lid = doc_->layers().activeLayer();
+    const LayerPtr l = doc_->layers().find(lid);
+    if (!l || l->tiles() == nullptr) return;
+    const Size cs = doc_->canvasSize();
+    Result<SelectionMask> region = SelectionMask::fromFlood(cs, *l->tiles(), static_cast<i32>(std::floor(c.x())),
+                                                            static_cast<i32>(std::floor(c.y())), floodTolerance_, floodGap_);
+    if (!region.ok()) {
+        Q_EMIT strokeRefused(QString::fromStdString(region.message()));
+        return;
+    }
+    app::LiveStrokeConfig cfg = cfgProvider_ ? cfgProvider_() : app::LiveStrokeConfig{};
+    // 🔴 출처: 사람. 팩토리가 준 것을 넘길 뿐이다.
+    const Result<u32> r = app::fillWithMask(*doc_, StrokeSource::humanPen(), lid, region.value(), cfg.color, false);
+    if (!r.ok()) {
+        Q_EMIT strokeRefused(QString::fromStdString(r.message()));
+        return;
+    }
+    const Rect b = region.value().bounds();
+    scheduleCanvasRepaint(b, 0);
+    Q_EMIT regionFilled();
+}
+
+void CanvasWidget::selectAll() {
+    if (doc_ == nullptr) return;
+    doc_->setSelectionMask(SelectionMask::all(doc_->canvasSize()));
+    rebuildSelectionOutline();
+    Q_EMIT selectionChanged();
+}
+
+void CanvasWidget::deselect() {
+    selectAll(); // Mari 규약: "선택 없음" = 전체 선택(제한 없음)
+}
+
+void CanvasWidget::invertSelection() {
+    if (doc_ == nullptr) return;
+    SelectionMask m = doc_->selectionMask();
+    m.invert();
+    doc_->setSelectionMask(std::move(m));
+    rebuildSelectionOutline();
+    Q_EMIT selectionChanged();
+}
+
+void CanvasWidget::selectionChangedExternally() {
+    rebuildSelectionOutline();
+    Q_EMIT selectionChanged();
+}
+
 // ── 마우스·키보드 (그리기가 아닌 조작만) ────────────────────────────────
 //
 // 🔴 그리기는 여기로 오지 않는다. 왼쪽 버튼·펜 접촉은 nativeEventFilter 가 먼저 먹는다 —
@@ -688,6 +892,27 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
         Q_EMIT paletteRequested(e->globalPosition().toPoint());
         e->accept();
         return;
+    }
+    if (e->button() == Qt::LeftButton && !viewDragActive() && !altEyedropper_) {
+        if (tool_ == Tool::Fill) {
+            bucketFill(e->position());
+            e->accept();
+            return;
+        }
+        if (tool_ == Tool::SelectWand) {
+            finishSelectionDrag(e->position(), e->modifiers());
+            e->accept();
+            return;
+        }
+        if (isSelectionTool(tool_)) {
+            selDrag_ = true;
+            selStart_ = selCur_ = e->position();
+            lasso_.clear();
+            lasso_.push_back(canvasToWidget().inverted().map(e->position()));
+            update();
+            e->accept();
+            return;
+        }
     }
     if (e->button() == Qt::LeftButton && shiftDown_ && !viewDragActive()) {
         sizeDrag_ = true;
@@ -722,6 +947,15 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
 }
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
+    if (selDrag_) {
+        selCur_ = e->position();
+        if (tool_ == Tool::SelectLasso) {
+            lasso_.push_back(canvasToWidget().inverted().map(e->position()));
+        }
+        update();
+        e->accept();
+        return;
+    }
     if (sizeDrag_) {
         // 오른쪽으로 끌면 커진다. 지수 스케일 — 작은 붓은 조금, 큰 붓은 많이.
         const f64 dx = e->position().x() - sizeDragStart_.x();
@@ -769,6 +1003,13 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
 }
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) {
+    if (selDrag_ && e->button() == Qt::LeftButton) {
+        selDrag_ = false;
+        finishSelectionDrag(e->position(), e->modifiers());
+        update();
+        e->accept();
+        return;
+    }
     if (sizeDrag_ && e->button() == Qt::LeftButton) {
         sizeDrag_ = false;
         update();

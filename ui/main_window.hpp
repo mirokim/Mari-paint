@@ -98,6 +98,9 @@ private:
     QSlider* opacitySlider_ = nullptr;
     QSpinBox* opacitySpin_ = nullptr;
     QComboBox* smoothingCombo_ = nullptr;
+    QWidget* floodOptions_ = nullptr;
+    QSpinBox* toleranceSpin_ = nullptr;
+    QSpinBox* gapSpin_ = nullptr;
     QActionGroup* toolGroup_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;

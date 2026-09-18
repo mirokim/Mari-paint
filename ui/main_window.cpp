@@ -20,6 +20,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
+#include <QHBoxLayout>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QKeySequence>
@@ -133,8 +134,14 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
         for (QAction* a : toolGroup_->actions()) {
             if (a->data().toInt() == static_cast<int>(t)) a->setChecked(true);
         }
+        floodOptions_->setVisible(t == Tool::Fill || t == Tool::SelectWand);
         refreshStatus();
     });
+    connect(canvas_, &CanvasWidget::regionFilled, this, [this] {
+        thumbTimer_->start();
+        refreshTitle();
+    });
+    connect(canvas_, &CanvasWidget::selectionChanged, this, &MainWindow::refreshStatus);
 
     attachDocument(activeDocument());
     resize(1400, 900);
@@ -193,6 +200,14 @@ void MainWindow::buildMenus() {
     edit->addSeparator();
     edit->addAction("전경↔배경 교환  X", QKeySequence(Qt::Key_X), this, [this] { colorPanel_->swap(); });
     edit->addAction("기본 색(검정/흰색)  D", QKeySequence(Qt::Key_D), this, [this] { colorPanel_->resetDefaults(); });
+
+    QMenu* select = menuBar()->addMenu("선택(&S)");
+    select->addAction("전체 선택", QKeySequence::SelectAll, this, [this] { canvas_->selectAll(); });
+    select->addAction("선택 해제", QKeySequence(Qt::CTRL | Qt::Key_D), this, [this] { canvas_->deselect(); });
+    select->addAction("선택 반전", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I), this,
+                      [this] { canvas_->invertSelection(); });
+    select->addSeparator();
+    select->addAction("수식키: Shift 더하기 · Alt 빼기 · Shift+Alt 교집합")->setEnabled(false);
 
     QMenu* layer = menuBar()->addMenu("레이어(&L)");
     layer->addAction("새 레이어", QKeySequence(Qt::Key_Insert), this, [this] { layerPanel_->addLayer(); });
@@ -281,6 +296,13 @@ void MainWindow::buildToolbars() {
     addTool("eraser", "지우개", "지우개 (E)", Qt::Key_E, Tool::Eraser);
     addTool("color-picker", "스포이드", "스포이드 (I · Alt)", Qt::Key_I, Tool::Eyedropper);
     addTool("hand-stop", "손", "손 (H · Space)", Qt::Key_H, Tool::Hand);
+    toolsBar_->addSeparator();
+    addTool("bucket-droplet", "채우기", "페인트통 (G) — 클릭한 곳과 이어진 영역을 전경색으로", Qt::Key_G, Tool::Fill);
+    toolsBar_->addSeparator();
+    addTool("square-dashed", "사각 선택", "사각형 선택 (M 키는 미러라 R) — Shift 더하기 · Alt 빼기 · Shift+Alt 교집합", Qt::Key_R, Tool::SelectRect);
+    addTool("circle-dashed", "타원 선택", "타원 선택 (O)", Qt::Key_O, Tool::SelectEllipse);
+    addTool("lasso", "올가미", "올가미 선택 (L)", Qt::Key_L, Tool::SelectLasso);
+    addTool("wand", "마술봉", "마술봉 (W) — 이어진 같은 색 영역", Qt::Key_W, Tool::SelectWand);
 
     // 상단 옵션 툴바 — 붓 프리셋 · 크기 · 불투명도 · 보정 · 실행취소
     optionsBar_ = addToolBar("옵션");
@@ -347,6 +369,32 @@ void MainWindow::buildToolbars() {
     smoothingCombo_ = new QComboBox(optionsBar_);
     smoothingCombo_->addItems({"끔", "약함", "보통", "강함"});
     optionsBar_->addWidget(smoothingCombo_);
+
+    // 마술봉·페인트통 옵션(해당 도구일 때만 보인다)
+    floodOptions_ = new QWidget(optionsBar_);
+    {
+        auto* row = new QHBoxLayout(floodOptions_);
+        row->setContentsMargins(6, 0, 0, 0);
+        row->setSpacing(6);
+        row->addWidget(new QLabel("허용 오차", floodOptions_));
+        toleranceSpin_ = new QSpinBox(floodOptions_);
+        toleranceSpin_->setRange(0, 255);
+        toleranceSpin_->setValue(32);
+        toleranceSpin_->setFixedWidth(56);
+        row->addWidget(toleranceSpin_);
+        row->addWidget(new QLabel("틈 닫기", floodOptions_));
+        gapSpin_ = new QSpinBox(floodOptions_);
+        gapSpin_->setRange(0, 16);
+        gapSpin_->setSuffix(" px");
+        gapSpin_->setFixedWidth(64);
+        row->addWidget(gapSpin_);
+        const auto push = [this] { canvas_->setFloodOptions(toleranceSpin_->value(), gapSpin_->value()); };
+        connect(toleranceSpin_, &QSpinBox::valueChanged, this, [push](int) { push(); });
+        connect(gapSpin_, &QSpinBox::valueChanged, this, [push](int) { push(); });
+        push();
+    }
+    optionsBar_->addWidget(floodOptions_);
+    floodOptions_->setVisible(false);
 
     optionsBar_->addSeparator();
     optionsBar_->addAction(undoAction_);
@@ -658,6 +706,11 @@ void MainWindow::refreshStatus() {
     case Tool::Eraser: toolName = "지우개"; toolIcon = "eraser"; break;
     case Tool::Eyedropper: toolName = "스포이드"; toolIcon = "color-picker"; break;
     case Tool::Hand: toolName = "손"; toolIcon = "hand-stop"; break;
+    case Tool::Fill: toolName = "채우기"; toolIcon = "bucket-droplet"; break;
+    case Tool::SelectRect: toolName = "사각 선택"; toolIcon = "square-dashed"; break;
+    case Tool::SelectEllipse: toolName = "타원 선택"; toolIcon = "circle-dashed"; break;
+    case Tool::SelectLasso: toolName = "올가미"; toolIcon = "lasso"; break;
+    case Tool::SelectWand: toolName = "마술봉"; toolIcon = "wand"; break;
     }
     if (statusToolIconName_ != toolIcon) {
         statusToolIconName_ = toolIcon;
