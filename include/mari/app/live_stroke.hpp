@@ -46,6 +46,7 @@ struct LiveStrokeConfig {
     brush::MariBrushPreset preset;
     BrushId brushId = kInvalidBrushId; ///< 기록에 실리는 붓 id
     Color color{};
+    Color background{255, 255, 255, 255}; ///< 색 변화(전경↔배경)가 쓴다
     bool eraser = false;
     u64 seed = 0;
     stroke::SmoothingMode smoothing = stroke::SmoothingMode::Off;

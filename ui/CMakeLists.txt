@@ -36,6 +36,12 @@ set(MARI_UI_SOURCES
     popup_palette.cpp
     popup_palette.hpp
     tablet_dialog.cpp
+    brush_preview.cpp
+    brush_preview.hpp
+    brush_panel.cpp
+    brush_panel.hpp
+    brush_editor.cpp
+    brush_editor.hpp
     shortcut_dialog.hpp
     shortcut_dialog.cpp
     tablet_dialog.hpp
@@ -50,7 +56,7 @@ set(MARI_UI_SOURCES
 add_library(mari_ui STATIC ${MARI_UI_SOURCES})
 target_include_directories(mari_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(mari_ui
-    PUBLIC mari::common mari::app mari::record mari::win_input
+    PUBLIC mari::common mari::app mari::agent mari::io_brush mari::record mari::win_input
            Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
 # QT_NO_EMIT: Qt 의 `emit` 매크로가 mari 헤더의 emit() 메서드와 충돌한다. ui 코드는 Q_EMIT 을 쓴다.
 target_compile_definitions(mari_ui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE QT_NO_EMIT)

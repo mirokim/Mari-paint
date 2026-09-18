@@ -1,6 +1,8 @@
 // Mari Paint — 최소 UI 구현 (ui/main_window.hpp)
 #include "main_window.hpp"
 
+#include "brush_editor.hpp"
+#include "brush_panel.hpp"
 #include "canvas_widget.hpp"
 #include "color_panel.hpp"
 #include "icons.hpp"
@@ -10,7 +12,9 @@
 #include "shortcut_dialog.hpp"
 #include "tablet_dialog.hpp"
 
+#include <mari/agent/brush_library.hpp>
 #include <mari/app/layer_commands.hpp>
+#include <mari/io/brush/importer.hpp>
 
 #include <mari/brush/builtin.hpp>
 #include <mari/win/input/pointer_input.hpp>
@@ -28,6 +32,10 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QTreeWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QVBoxLayout>
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
@@ -82,6 +90,9 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     : QMainWindow(parent), app_(app), journalPath_(std::move(journalPath)) {
     heapCheck("MainWindow ctor start");
     brushes_ = brush::builtinPresets();
+    builtinBrushCount_ = brushes_.size();
+    brushDir_ = agent::defaultBrushDir();
+    for (brush::MariBrushPreset& p : agent::loadPresetDir(brushDir_)) brushes_.push_back(std::move(p));
 
     canvas_ = new CanvasWidget(this);
     setCentralWidget(canvas_);
@@ -221,6 +232,17 @@ void MainWindow::buildMenus() {
                       [this] { canvas_->invertSelection(); });
     select->addSeparator();
     select->addAction("수식키: Shift 더하기 · Alt 빼기 · Shift+Alt 교집합")->setEnabled(false);
+
+    QMenu* brushMenu = menuBar()->addMenu("브러시(&B)");
+    brushMenu->addAction(themedIcon("folder-open", 20), "브러시 가져오기... (.abr · .sut · .mbp)", this, &MainWindow::importBrushes);
+    brushMenu->addAction(themedIcon("settings", 20), "현재 브러시 편집...", QKeySequence(Qt::Key_F5), this,
+                         [this] { editBrush(brushCombo_->currentIndex(), false); });
+    brushMenu->addAction(themedIcon("square-plus", 20), "새 브러시(현재 브러시 바탕)...", this,
+                         [this] { editBrush(brushCombo_->currentIndex(), true); });
+    brushMenu->addAction(themedIcon("copy", 20), "현재 브러시 복제", this, [this] { duplicateBrush(brushCombo_->currentIndex()); });
+    brushMenu->addAction(themedIcon("trash", 20), "현재 브러시 삭제", this, [this] { deleteBrush(brushCombo_->currentIndex()); });
+    brushMenu->addSeparator();
+    brushMenu->addAction("브러시 폴더 다시 읽기", this, [this] { reloadBrushes(); });
 
     QMenu* layer = menuBar()->addMenu("레이어(&L)");
     // 기본 단축키는 포토샵과 같다(편집 › 단축키 설정 에서 바꾼다).
@@ -462,8 +484,25 @@ void MainWindow::buildDocks() {
     addDockWidget(Qt::RightDockWidgetArea, navDock_);
     colorDock_->setObjectName("colorDock");
     layerDock_->setObjectName("layerDock");
+    brushDock_ = new QDockWidget("브러시", this);
+    brushDock_->setObjectName("brushDock");
+    brushDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    brushPanel_ = new BrushPanel(brushDock_);
+    brushDock_->setWidget(brushPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, brushDock_);
+    tabifyDockWidget(layerDock_, brushDock_);
+    layerDock_->raise();
     resizeDocks({navDock_, colorDock_, layerDock_}, {150, 330, 400}, Qt::Vertical);
     resizeDocks({colorDock_}, {280}, Qt::Horizontal);
+    brushPanel_->setPreviewColor(colorPanel_->foreground());
+    brushPanel_->setBrushes(brushes_, builtinBrushCount_, brushCombo_->currentIndex());
+    connect(brushPanel_, &BrushPanel::brushSelected, this, [this](int i) { brushCombo_->setCurrentIndex(i); });
+    connect(brushPanel_, &BrushPanel::editRequested, this, [this](int i) { editBrush(i, false); });
+    connect(brushPanel_, &BrushPanel::duplicateRequested, this, &MainWindow::duplicateBrush);
+    connect(brushPanel_, &BrushPanel::deleteRequested, this, &MainWindow::deleteBrush);
+    connect(brushPanel_, &BrushPanel::newRequested, this, [this] { editBrush(brushCombo_->currentIndex(), true); });
+    connect(brushPanel_, &BrushPanel::importRequested, this, &MainWindow::importBrushes);
+    connect(brushCombo_, &QComboBox::currentIndexChanged, this, [this](int i) { brushPanel_->setCurrent(i); });
 
     palette_ = new PopupPalette(this);
     connect(palette_, &PopupPalette::brushChosen, this, [this](int i) { brushCombo_->setCurrentIndex(i); });
@@ -476,7 +515,10 @@ void MainWindow::buildDocks() {
     });
     connect(layerPanel_, &LayerPanel::mergeDownRequested, this, &MainWindow::mergeDown);
     connect(layerPanel_, &LayerPanel::activeLayerChanged, this, [this](LayerId) { refreshStatus(); });
-    connect(colorPanel_, &ColorPanel::foregroundChanged, this, [this](const QColor&) { refreshStatus(); });
+    connect(colorPanel_, &ColorPanel::foregroundChanged, this, [this](const QColor& c) {
+        brushPanel_->setPreviewColor(c);
+        refreshStatus();
+    });
 }
 
 void MainWindow::buildStatusBar() {
@@ -602,6 +644,8 @@ app::LiveStrokeConfig MainWindow::strokeConfig() const {
     cfg.preset.opacity = static_cast<f32>(opacitySlider_->value()) / 100.0f;
     const QColor c = colorPanel_->foreground();
     cfg.color = Color8::rgba(static_cast<u8>(c.red()), static_cast<u8>(c.green()), static_cast<u8>(c.blue()), 255);
+    const QColor bgc = colorPanel_->background();
+    cfg.background = Color8::rgba(static_cast<u8>(bgc.red()), static_cast<u8>(bgc.green()), static_cast<u8>(bgc.blue()), 255);
     cfg.eraser = canvas_->tool() == Tool::Eraser;
     switch (smoothingCombo_->currentIndex()) {
     case 1: cfg.smoothing = stroke::SmoothingMode::Light; break;
@@ -713,12 +757,147 @@ void MainWindow::showShortcutDialog() {
     dlg.exec();
 }
 
+// ── 브러시 라이브러리 ─────────────────────────────────────────────────────
+
+void MainWindow::reloadBrushes(const QString& selectName) {
+    const QString keep = selectName.isEmpty() ? brushCombo_->currentText() : selectName;
+    brushes_ = brush::builtinPresets();
+    builtinBrushCount_ = brushes_.size();
+    std::vector<std::string> skipped;
+    for (brush::MariBrushPreset& p : agent::loadPresetDir(brushDir_, &skipped)) brushes_.push_back(std::move(p));
+    for (const std::string& sk : skipped) statusBar()->showMessage("브러시 파일 건너뜀: " + QString::fromStdString(sk), 6000);
+    const QSignalBlocker block(brushCombo_);
+    brushCombo_->clear();
+    int idx = 0;
+    for (usize i = 0; i < brushes_.size(); ++i) {
+        brushCombo_->addItem(QString::fromStdString(brushes_[i].name));
+        if (QString::fromStdString(brushes_[i].name) == keep) idx = static_cast<int>(i);
+    }
+    brushCombo_->setCurrentIndex(idx);
+    brushPanel_->setBrushes(brushes_, builtinBrushCount_, idx);
+    palette_->setBrushes(brushes_, idx);
+}
+
+void MainWindow::importBrushes() {
+    const QStringList paths = QFileDialog::getOpenFileNames(this, "브러시 가져오기", QString(),
+                                                            "브러시 (*.abr *.sut *.mbp);;Photoshop (*.abr);;Clip Studio (*.sut);;Mari (*.mbp)");
+    if (paths.isEmpty()) return;
+    std::vector<std::string> notes;
+    std::vector<std::string> names;
+    for (const QString& qp : paths) {
+        const std::string path = qp.toStdString();
+        std::vector<brush::MariBrushPreset> presets;
+        if (qp.endsWith(".mbp", Qt::CaseInsensitive)) {
+            Result<brush::MariBrushPreset> p = agent::loadPresetFile(path);
+            if (!p.ok()) { notes.push_back(path + ": " + p.message()); continue; }
+            presets.push_back(std::move(p).value());
+        } else {
+            Result<brush::ImportResult> r = io::brush::importBrushFile(path);
+            if (!r.ok()) { notes.push_back(path + ": " + r.message()); continue; }
+            for (const brush::ImportNote& n : r.value().report.notes) {
+                const char* sev = n.severity == brush::ImportSeverity::Dropped ? "[버림] "
+                                  : n.severity == brush::ImportSeverity::Degraded ? "[근사] " : "[정보] ";
+                notes.push_back(sev + n.message);
+            }
+            presets = std::move(r.value().presets);
+        }
+        for (brush::MariBrushPreset& p : presets) {
+            const Result<void> w = agent::savePresetFile(agent::presetFilePath(brushDir_, p.name), p);
+            if (!w.ok()) notes.push_back("저장 실패: " + w.message());
+            else names.push_back(p.name);
+        }
+    }
+    reloadBrushes(names.empty() ? QString() : QString::fromStdString(names.front()));
+    showImportReport(QString("브러시 %1개 가져옴").arg(names.size()), notes, names);
+}
+
+void MainWindow::showImportReport(const QString& title, const std::vector<std::string>& notes,
+                                  const std::vector<std::string>& importedNames) {
+    QDialog dlg(this);
+    dlg.setWindowTitle(title);
+    dlg.resize(640, 420);
+    auto* layout = new QVBoxLayout(&dlg);
+    QString head = importedNames.empty() ? "가져온 브러시가 없다." : "가져온 브러시: ";
+    for (usize i = 0; i < importedNames.size() && i < 12; ++i) head += (i ? ", " : "") + QString::fromStdString(importedNames[i]);
+    if (importedNames.size() > 12) head += QString(" 외 %1개").arg(importedNames.size() - 12);
+    auto* headLabel = new QLabel(head, &dlg);
+    headLabel->setWordWrap(true);
+    layout->addWidget(headLabel);
+    auto* note = new QLabel(notes.empty() ? "번역하지 못한 항목이 없다 — 전부 그대로 가져왔다."
+                                          : "번역하지 못했거나 근사한 항목(조용히 버리지 않는다 — docs/02 5절):", &dlg);
+    layout->addWidget(note);
+    auto* tree = new QTreeWidget(&dlg);
+    tree->setHeaderHidden(true);
+    tree->setRootIsDecorated(false);
+    for (const std::string& n : notes) new QTreeWidgetItem(tree, {QString::fromStdString(n)});
+    layout->addWidget(tree, 1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dlg);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    layout->addWidget(buttons);
+    dlg.exec();
+}
+
+void MainWindow::editBrush(int index, bool forceCopy) {
+    if (index < 0 || static_cast<usize>(index) >= brushes_.size()) return;
+    const bool builtin = static_cast<usize>(index) < builtinBrushCount_;
+    brush::MariBrushPreset base = brushes_[static_cast<usize>(index)];
+    if (forceCopy || builtin) base.name += " 사본";
+    // 옵션 바의 현재 크기·불투명도를 출발점으로.
+    base.tip.diameter = static_cast<f32>(sizeSpin_->value());
+    base.opacity = static_cast<f32>(opacitySlider_->value()) / 100.0f;
+    BrushEditor dlg(base, builtin || forceCopy, colorPanel_->foreground(), colorPanel_->background(), this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    brush::MariBrushPreset p = dlg.result();
+    if (p.sourceFormat.empty() || p.sourceFormat == "builtin") p.sourceFormat = "native";
+    const std::string oldName = brushes_[static_cast<usize>(index)].name;
+    if (!dlg.saveAsNew() && !builtin) {
+        // 원본 파일을 지우고(이름이 바뀌었을 수 있다) 새로 쓴다.
+        (void)agent::removePresetFile(brushDir_, oldName);
+    }
+    (void)agent::removePresetFile(brushDir_, p.name); // 같은 이름은 덮어쓴다
+    const Result<void> w = agent::savePresetFile(agent::presetFilePath(brushDir_, p.name), p);
+    if (!w.ok()) {
+        QMessageBox::warning(this, "브러시", QString::fromStdString(w.message()));
+        return;
+    }
+    reloadBrushes(QString::fromStdString(p.name));
+    statusBar()->showMessage("브러시 저장: " + QString::fromStdString(p.name), 3000);
+}
+
+void MainWindow::duplicateBrush(int index) {
+    if (index < 0 || static_cast<usize>(index) >= brushes_.size()) return;
+    brush::MariBrushPreset p = brushes_[static_cast<usize>(index)];
+    p.name += " 사본";
+    if (p.sourceFormat.empty() || p.sourceFormat == "builtin") p.sourceFormat = "native";
+    const Result<void> w = agent::savePresetFile(agent::presetFilePath(brushDir_, p.name), p);
+    if (!w.ok()) {
+        QMessageBox::warning(this, "브러시", QString::fromStdString(w.message()));
+        return;
+    }
+    reloadBrushes(QString::fromStdString(p.name));
+}
+
+void MainWindow::deleteBrush(int index) {
+    if (index < 0 || static_cast<usize>(index) >= brushes_.size()) return;
+    if (static_cast<usize>(index) < builtinBrushCount_) {
+        statusBar()->showMessage("내장 브러시는 지울 수 없다", 3000);
+        return;
+    }
+    const std::string name = brushes_[static_cast<usize>(index)].name;
+    if (QMessageBox::question(this, "브러시 삭제", QString("'%1' 을 지울까? (파일도 지운다)").arg(QString::fromStdString(name))) !=
+        QMessageBox::Yes)
+        return;
+    (void)agent::removePresetFile(brushDir_, name);
+    reloadBrushes();
+}
+
 void MainWindow::togglePanels() {
     panelsHidden_ = !panelsHidden_;
     const bool show = !panelsHidden_;
     colorDock_->setVisible(show);
     layerDock_->setVisible(show);
     navDock_->setVisible(show);
+    brushDock_->setVisible(show);
     toolsBar_->setVisible(show);
     optionsBar_->setVisible(show);
 }

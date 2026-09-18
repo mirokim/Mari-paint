@@ -20,11 +20,11 @@
 | 팁 모양(원/비트맵/각도/종횡비) | ◐ IR 완비, 편집 UI 없음 | 브러시 팁 탭 | 브러시 끝(이미지 소재) |
 | 경도 · 간격 · 흩뿌림 | ◐ 코어 지원, UI 없음 | 있음 | 있음 |
 | 필압→크기/불투명/유량 곡선 | ◐ `DynamicLink` 곡선, 편집 UI 없음 | 센서별 곡선 편집기 | 필압 설정 곡선 |
-| 텍스처/종이 질감 | ○ 엔진이 Dropped | Texture 탭 | 질감 소재 |
+| 텍스처/종이 질감 | ● 곱하기·빼기·어둡게·스크린·오버레이, 캔버스/스탬프 고정 (2026-09-19) | Texture 탭 | 질감 소재 |
 | 스태빌라이저 | ◐ EMA 4단 | 기본/가중/스태빌라이저(지연·끝맺음) | 손떨림 보정 0–100 + 후보정 |
 | 섞기/희석/번짐(수채) | ○ | Color Smudge 엔진 | 물감량/농도/색 늘이기 |
 | 지우개 | ● 도구 + 펜 뒤집기 | ● | ● |
-| 프리셋 저장/태그/즐겨찾기 | ○ 내장 4개 고정 | 태그·도커·검색 | 서브툴 그룹·즐겨찾기 |
+| 프리셋 저장/태그/즐겨찾기 | ◐ .mbp 저장·브러시 패널·편집기 (2026-09-19; 태그·즐겨찾기 ○) | 태그·도커·검색 | 서브툴 그룹·즐겨찾기 |
 | 드래그로 크기 | ● Shift+드래그 (2026-09-19) | Shift+드래그 | Ctrl+Alt+드래그 |
 | 전역 압력 곡선 · 테스터 | ● (2026-09-19) | ● | ● |
 
@@ -107,7 +107,7 @@
 | 15 | **PSD 읽기/쓰기** | L · io | #1 #13 #5 가 먼저 있어야 손실 없이 매핑 |
 
 그다음: 실행취소 히스토리 도커(S) · 팔레트 도커(S) · ~~단축키 편집기(M)~~ ✅ · 참조 이미지(S) · 그라데이션 도구 UI(S) ·
-브러시 임포트 메뉴(S, `brush.import` 있음) · 텍스처 브러시(M, 엔진 Dropped 해제).
+~~브러시 임포트 메뉴~~ ✅ · ~~텍스처 브러시~~ ✅ (2026-09-19: 듀얼·색 변화·젖은 가장자리·개수·노이즈까지).
 
 ## 명시적으로 미루는 것
 
@@ -124,3 +124,18 @@ CSP: https://help.clip-studio.com/en-us/manual_en/240_brushes/Customizing_brush_
 180_layers/Layer_properties.htm · 360_transform/Liquify_tool.htm · 330_selection/Selection_area_tool.htm ·
 420_fill/Fill_Tool.htm · 510_ruler/Perspective_Rulers.htm · 690_interface/Quick_Access_Palette.htm ·
 720_preferences/Shortcut_Settings.htm · 210_file/Save_file.htm
+
+## 11. 2026-09-19 브러시 라운드 — 무엇이 되고 무엇이 남았나
+
+**엔진(native)**: 텍스처 · 듀얼 브러시 · 색 변화(전경↔배경·H·S·B·순도, 스탬프/획) · 젖은 가장자리 · Count · 노이즈.
+남은 것: 에어브러시 시간 반복(멈춰 있어도 쌓임) · 색 변화 제어원(필압→전경/배경) · 개수 지터 · 듀얼 팁의 독립 간격.
+
+**.abr**: dualBrush · clVr · Wtdg · Nose · Rpt · Cnt 번역. v1/2(팁 전용)는 여전히 ✗.
+**.sut**: 팁·텍스처·기본 파라미터. effector 커브 리버싱은 그대로 불확실(리포트에 남긴다).
+
+**라이브러리**: `.mbp`(JSON + PNG base64) · `%LOCALAPPDATA%/Mari/Mari Paint/brushes` 를 GUI 와 `--serve`/`--mcp` 가 같이 읽는다.
+GUI: 브러시 도크(엔진 미리보기 격자·검색·우클릭 편집/복제/삭제/가져오기) · 브러시 편집기(팁/동작/동적/텍스처/듀얼/색 변화, 실시간 미리보기) ·
+가져오기 리포트(버림/근사/정보). 에이전트: `brush.import(persist)` · `brush.save` · `brush.remove` · `brush.export`.
+
+**에이전트 도구 동등성**(사람이 GUI 로 하는 것 = 헤드리스로 같은 코어 경로): `bucket` · `select mode=wand` · `layer.flatten` ·
+`layer.mask` · `layer.group/ungroup` · 획 점에 `tx/ty/t` · `background`. 남은 것: 자유 변형·색 보정(둘 다 GUI 도 아직 없음).

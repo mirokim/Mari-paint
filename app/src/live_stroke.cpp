@@ -97,6 +97,7 @@ Result<std::unique_ptr<LiveStroke>> LiveStroke::begin(Document& doc, const Strok
     s->ctx_ = std::make_unique<brush::StrokeContext>(src);
     s->ctx_->target = layer->tiles();
     s->ctx_->color = cfg.color;
+    s->ctx_->background = cfg.background;
     s->ctx_->eraser = cfg.eraser;
     s->ctx_->alphaLocked = layer->alphaLocked();
     s->ctx_->layerId = layer->id();

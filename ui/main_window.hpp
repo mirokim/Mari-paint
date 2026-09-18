@@ -35,6 +35,7 @@ class ColorPanel;
 class LayerPanel;
 class Navigator;
 class PopupPalette;
+class BrushPanel;
 class ShortcutRegistry;
 enum class Tool;
 
@@ -76,6 +77,14 @@ private:
     void mergeDown();
     void flattenImage();
     void showShortcutDialog();
+    // 브러시 라이브러리(.mbp 폴더 = 헤드리스와 공유)
+    void reloadBrushes(const QString& selectName = QString());
+    void importBrushes();
+    void editBrush(int index, bool forceCopy);
+    void duplicateBrush(int index);
+    void deleteBrush(int index);
+    void showImportReport(const QString& title, const std::vector<std::string>& notes,
+                          const std::vector<std::string>& importedNames);
     void refreshStatus();
     void refreshTitle();
 
@@ -87,6 +96,10 @@ private:
     QDockWidget* colorDock_ = nullptr;
     QDockWidget* layerDock_ = nullptr;
     QDockWidget* navDock_ = nullptr;
+    QDockWidget* brushDock_ = nullptr;
+    BrushPanel* brushPanel_ = nullptr;
+    usize builtinBrushCount_ = 0;
+    std::string brushDir_;
     Navigator* navigator_ = nullptr;
     PopupPalette* palette_ = nullptr;
     bool canvasOnly_ = false;
