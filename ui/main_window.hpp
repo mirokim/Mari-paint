@@ -1,8 +1,9 @@
-// Mari Paint — 최소 UI (docs/08 3.4): 툴바 · 레이어 패널 · 캔버스. 그 이상은 나중에.
+// Mari Paint — 최소 UI (docs/08 3.4): 도구 툴바 · 옵션 툴바 · 색/레이어 도크 · 캔버스
 //
 // 창 방식은 docs/08 8절에서 미결이었다. 여기서는 **단일 창 + 도킹 패널**로 시작한다 —
 // 플로팅은 창이 여러 개라 콜드 스타트와 포커스 관리가 무겁고, 도킹은 Qt 가 공짜로 준다.
-// 바꾸고 싶으면 QDockWidget 을 떼면 된다. 캔버스는 이 결정을 모른다.
+// 레이아웃은 페인팅 앱 공통분모다(Krita·CSP·SAI): 도구(좌) · 캔버스(중) · 색+레이어(우).
+// 단축키는 docs/09-ui-research.md 의 표를 따른다.
 #ifndef MARI_UI_MAIN_WINDOW_HPP
 #define MARI_UI_MAIN_WINDOW_HPP
 
@@ -10,27 +11,33 @@
 #include <mari/app/live_stroke.hpp>
 #include <mari/brush/preset.hpp>
 
+#include <QColor>
 #include <QMainWindow>
 
 #include <vector>
 
 class QAction;
+class QActionGroup;
 class QComboBox;
+class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
-class QListWidget;
-class QListWidgetItem;
-class QToolButton;
+class QSlider;
+class QToolBar;
+class QTimer;
 
 namespace mari::ui {
 
 class CanvasWidget;
+class ColorPanel;
+class LayerPanel;
+enum class Tool;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
 public:
     /// `app` 은 소유하지 않는다. 창보다 오래 살아야 한다.
-    /// `journalPath` 는 상태 표시줄에 보여 줄 기록 위치. 비면 "기록 없음".
+    /// `journalPath` 는 상태 표시줄(디버그)에 보여 줄 기록 위치.
     explicit MainWindow(app::Application& app, QString journalPath, QWidget* parent = nullptr);
     ~MainWindow() override;
 
@@ -39,8 +46,8 @@ protected:
 
 private:
     void buildMenus();
-    void buildToolbar();
-    void buildLayerPanel();
+    void buildToolbars();
+    void buildDocks();
     void buildStatusBar();
 
     [[nodiscard]] app::LiveStrokeConfig strokeConfig() const;
@@ -54,36 +61,39 @@ private:
 
     void undo();
     void redo();
-    void addLayer();
-    void removeLayer();
-    void refreshLayerList();
-    void onLayerRowChanged(int row);
-    void onLayerItemChanged(QListWidgetItem* item);
-    void pickColor();
+    void setBrushSize(f64 px);
+    void stepBrushSize(int direction);
+    void stepOpacity(int direction);
+    void togglePanels();
     void refreshStatus();
     void refreshTitle();
 
     app::Application& app_;
     QString journalPath_;
     CanvasWidget* canvas_ = nullptr;
+    ColorPanel* colorPanel_ = nullptr;
+    LayerPanel* layerPanel_ = nullptr;
+    QDockWidget* colorDock_ = nullptr;
+    QDockWidget* layerDock_ = nullptr;
+    QToolBar* toolsBar_ = nullptr;
+    QToolBar* optionsBar_ = nullptr;
+    bool panelsHidden_ = false;
 
     std::vector<brush::MariBrushPreset> brushes_;
     QComboBox* brushCombo_ = nullptr;
+    QSlider* sizeSlider_ = nullptr;
     QDoubleSpinBox* sizeSpin_ = nullptr;
+    QSlider* opacitySlider_ = nullptr;
     QComboBox* smoothingCombo_ = nullptr;
-    QToolButton* colorButton_ = nullptr;
-    QAction* eraserAction_ = nullptr;
+    QActionGroup* toolGroup_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
-    QColor color_{0, 0, 0};
+    QAction* debugStatusAction_ = nullptr;
+    bool syncingSize_ = false;
+    QTimer* thumbTimer_ = nullptr;
 
-    QListWidget* layerList_ = nullptr;
-    bool layerListBusy_ = false;
-
-    QLabel* statusInput_ = nullptr;
-    QLabel* statusRecord_ = nullptr;
-    QLabel* statusLatency_ = nullptr;
-    QLabel* statusStrokes_ = nullptr;
+    QLabel* statusMain_ = nullptr;
+    QLabel* statusDebug_ = nullptr;
     QLabel* statusView_ = nullptr;
     u64 strokes_ = 0;
     u64 recordedStrokes_ = 0;

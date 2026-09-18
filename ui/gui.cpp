@@ -7,6 +7,7 @@
 #include <mari/record/sigan_recorder.hpp>
 
 #include <QApplication>
+#include <QPalette>
 #include <QDir>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -60,6 +61,30 @@ int runGui(int argc, char** argv) {
     tr("start");
     QApplication qapp(argc, argv);
     tr("QApplication ok"); heapCheck("after QApplication");
+    // 다크 테마: Fusion + 팔레트(Qt 6.5+ 권장). 페인팅 앱이 중간 회색 UI 를 쓰는 이유는
+    // 색 지각 중립성이다 — 밝은 크롬 옆에서는 캔버스 색이 달라 보인다.
+    QApplication::setStyle("Fusion");
+    {
+        QPalette pal;
+        const QColor window(43, 43, 43), base(30, 30, 30), text(220, 220, 220), hl(61, 123, 217);
+        pal.setColor(QPalette::Window, window);
+        pal.setColor(QPalette::WindowText, text);
+        pal.setColor(QPalette::Base, base);
+        pal.setColor(QPalette::AlternateBase, window);
+        pal.setColor(QPalette::ToolTipBase, base);
+        pal.setColor(QPalette::ToolTipText, text);
+        pal.setColor(QPalette::Text, text);
+        pal.setColor(QPalette::Button, window);
+        pal.setColor(QPalette::ButtonText, text);
+        pal.setColor(QPalette::BrightText, Qt::red);
+        pal.setColor(QPalette::Highlight, hl);
+        pal.setColor(QPalette::HighlightedText, Qt::white);
+        pal.setColor(QPalette::PlaceholderText, QColor(120, 120, 120));
+        pal.setColor(QPalette::Disabled, QPalette::Text, QColor(110, 110, 110));
+        pal.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(110, 110, 110));
+        pal.setColor(QPalette::Disabled, QPalette::WindowText, QColor(110, 110, 110));
+        QApplication::setPalette(pal);
+    }
     QApplication::setApplicationName("Mari Paint");
     QApplication::setOrganizationName("Mari");
 

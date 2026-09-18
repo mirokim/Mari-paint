@@ -21,6 +21,12 @@ set(CMAKE_AUTOMOC ON)
 set(MARI_UI_SOURCES
     canvas_widget.cpp
     canvas_widget.hpp
+    color_wheel.cpp
+    color_wheel.hpp
+    color_panel.cpp
+    color_panel.hpp
+    layer_panel.cpp
+    layer_panel.hpp
     main_window.cpp
     main_window.hpp
     gui.cpp

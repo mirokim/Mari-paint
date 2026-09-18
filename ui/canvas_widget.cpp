@@ -6,6 +6,9 @@
 #include <mari/stroke/input.hpp>
 
 #include <QCoreApplication>
+#include <QCursor>
+#include <QEnterEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -52,6 +55,8 @@ CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
     setAttribute(Qt::WA_NoSystemBackground);
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(64, 64);
+    setMouseTracking(true);  // 호버 윤곽
+    setCursor(Qt::CrossCursor);
     // 🔴 필터는 여기서 건다. showEvent 안에서 걸면 Qt 가 네이티브 메시지를 돌리며 필터 목록을
     //    순회하는 **도중에** 목록이 바뀌어 Qt6Widgets 안에서 죽는다(실측: 실행의 절반이 show() 에서
     //    AV). 생성자는 네이티브 이벤트 밖이다. attached_ 가 false 인 동안 필터는 아무것도 안 한다.
@@ -82,7 +87,7 @@ void CanvasWidget::setDocument(app::Document* doc) {
     if (doc_ == nullptr) {
         backing_ = QImage();
         pendingComposite_ = Rect{};
-        update();
+        invalidateView();
         return;
     }
     const Size sz = doc_->canvasSize();
@@ -119,7 +124,9 @@ void CanvasWidget::scheduleCanvasRepaint(const Rect& canvasRect, u64 inputNs) {
     if (inputNs != 0 && (pendingInputNs_ == 0 || inputNs < pendingInputNs_)) {
         pendingInputNs_ = inputNs;
     }
-    update(canvasToWidgetRect(canvasRect));
+    const QRect wr = canvasToWidgetRect(canvasRect);
+    viewDirty_ += wr;
+    update(wr);
 }
 
 void CanvasWidget::compositePending() {
@@ -190,31 +197,67 @@ QRect CanvasWidget::canvasToWidgetRect(const Rect& r) const {
     return canvasToWidget().mapRect(q).toAlignedRect().adjusted(-2, -2, 2, 2);
 }
 
+void CanvasWidget::invalidateView() {
+    viewDirty_ = QRegion(rect());
+    update();
+}
+
+void CanvasWidget::renderViewCache() {
+    const f64 s = dpr();
+    const QSize phys(static_cast<int>(std::lround(width() * s)), static_cast<int>(std::lround(height() * s)));
+    if (viewCache_.size() != phys) {
+        viewCache_ = QImage(phys, QImage::Format_ARGB32_Premultiplied);
+        viewCache_.setDevicePixelRatio(s);
+        viewDirty_ = QRegion(rect());
+    }
+    if (viewDirty_.isEmpty()) {
+        return;
+    }
+    QPainter p(&viewCache_);
+    p.setClipRegion(viewDirty_);
+    const QRect bounds = viewDirty_.boundingRect();
+    p.fillRect(bounds, QColor(64, 64, 64));
+    if (doc_ != nullptr && !backing_.isNull()) {
+        const QTransform t = canvasToWidget();
+        p.setTransform(t);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, view_.state().zoom < 1.0);
+        // 더러운 영역만큼만 캔버스를 그린다. 정수 정렬 + 1px 여유: 소수 소스 사각형은 이음새를 만든다.
+        const QRectF visibleCanvas = QRectF(
+            t.inverted().mapRect(QRectF(bounds)).toAlignedRect().adjusted(-1, -1, 1, 1).intersected(backing_.rect()));
+        if (!visibleCanvas.isEmpty()) {
+            p.fillRect(visibleCanvas, checkerBrush());
+            p.drawImage(visibleCanvas, backing_, visibleCanvas);
+        }
+    }
+    viewDirty_ = QRegion();
+}
+
 void CanvasWidget::paintEvent(QPaintEvent* e) {
+    const u64 tp0 = stroke::monotonicNowNs();
     compositePending();
+    const u64 tp1 = stroke::monotonicNowNs();
+    renderViewCache();
+    const u64 tp2 = stroke::monotonicNowNs();
+    if (traceOn() && pendingInputNs_ != 0 && tp0 > pendingInputNs_ && (tp0 - pendingInputNs_) > 16'000'000ull) {
+        std::fprintf(stderr, "[mari-gui] slow frame: wait-before-paint %.1f ms, composite %.1f ms, viewcache %.1f ms, rect %dx%d\n",
+                     static_cast<f64>(tp0 - pendingInputNs_) / 1e6, static_cast<f64>(tp1 - tp0) / 1e6,
+                     static_cast<f64>(tp2 - tp1) / 1e6, e->rect().width(), e->rect().height());
+    }
 
     QPainter p(this);
-    p.fillRect(e->rect(), QColor(64, 64, 64));
-    if (doc_ == nullptr || backing_.isNull()) {
-        return;
-    }
+    // 캐시 블릿. 논리 좌표 = 논리 좌표(캐시의 devicePixelRatio 가 물리 px 로 옮긴다).
+    p.drawImage(e->rect(), viewCache_, QRectF(QPointF(e->rect().topLeft()) * dpr(), QSizeF(e->rect().size()) * dpr()));
 
-    const QTransform t = canvasToWidget();
-    p.setTransform(t);
-    p.setRenderHint(QPainter::SmoothPixmapTransform, view_.state().zoom < 1.0);
-
-    // 화면의 갱신 영역만큼만 캔버스를 그린다 — 큰 캔버스에서 전체를 넘기지 않는다.
-    // 정수 정렬 + 1px 여유: 소스 사각형이 소수면 bilinear 가 경계 밖 픽셀을 섞어 이음새가 보인다.
-    const QRectF visibleCanvas = QRectF(t.inverted()
-                                            .mapRect(QRectF(e->rect()))
-                                            .toAlignedRect()
-                                            .adjusted(-1, -1, 1, 1)
-                                            .intersected(backing_.rect()));
-    if (visibleCanvas.isEmpty()) {
-        return;
+    // 호버 윤곽: 붓 지름 × 줌. 흰/검 두 겹이라 어떤 배경에서도 보인다. 논리 좌표에서 그린다.
+    if (hoverVisible_ && (tool_ == Tool::Brush || tool_ == Tool::Eraser) && !viewDragActive()) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal r = std::max(1.5, brushDiameter_ * view_.state().zoom / dpr() * 0.5);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(0, 0, 0, 160), 1.0));
+        p.drawEllipse(hoverPos_, r + 1.0, r + 1.0);
+        p.setPen(QPen(QColor(255, 255, 255, 220), 1.0));
+        p.drawEllipse(hoverPos_, r, r);
     }
-    p.fillRect(visibleCanvas, checkerBrush());
-    p.drawImage(visibleCanvas, backing_, visibleCanvas);
     p.end();
 
     // 펜→화면 지연: 이 프레임이 반영한 가장 이른 입력부터 지금까지.
@@ -235,6 +278,7 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
 
 void CanvasWidget::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
+    invalidateView();
     if (needFit_ && doc_ != nullptr && width() > 200 && height() > 200 && live_ == nullptr) {
         needFit_ = false;
         fitToView();
@@ -307,7 +351,9 @@ bool CanvasWidget::nativeEventFilter(const QByteArray& eventType, void* message,
         POINT pt{GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam)};
         ::ScreenToClient(topHwnd_, &pt);
         const bool inside = physRect().contains(QPointF(pt.x, pt.y));
-        if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam)) {
+        // 뷰 드래그(Space·손 도구)와 스포이드는 Qt 마우스 이벤트로 처리한다 — 획이 아니다.
+        const bool notAStroke = viewDragActive() || tool_ == Tool::Eyedropper || altEyedropper_;
+        if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam) || notAStroke) {
             bypassId_ = id;
             return false;
         }
@@ -344,15 +390,23 @@ void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
         finishStroke(nullptr);
     }
     app::LiveStrokeConfig cfg = cfgProvider_ ? cfgProvider_() : app::LiveStrokeConfig{};
+    if (tool_ == Tool::Eraser) {
+        cfg.eraser = true;
+    }
     if (s.eraser) {
-        cfg.eraser = true; // 펜을 뒤집었다. 툴바 설정보다 우선한다
+        cfg.eraser = true; // 펜을 뒤집었다. 도구 설정보다 우선한다
     }
     cfg.seed = (++strokeSeed_) ^ s.event.timestampNs;
     cfg.undoText = cfg.eraser ? "지우개" : "붓질";
 
     // 🔴 출처: 사람 펜. 팩토리가 준 것을 넘길 뿐이다. 여기서 만들지 않는다(core/origin.hpp).
+    const u64 t0 = stroke::monotonicNowNs();
     Result<std::unique_ptr<app::LiveStroke>> begun = app::LiveStroke::begin(
         *doc_, StrokeSource::humanPen(), doc_->layers().activeLayer(), cfg, s.event);
+    if (traceOn()) {
+        std::fprintf(stderr, "[mari-gui] LiveStroke::begin %.2f ms\n",
+                     static_cast<f64>(stroke::monotonicNowNs() - t0) / 1e6);
+    }
     if (!begun.ok()) {
         emit strokeRefused(QString::fromStdString(begun.message()));
         return;
@@ -382,7 +436,12 @@ void CanvasWidget::finishStroke(const stroke::RawInputEvent* last) {
         return;
     }
     const u64 inputNs = last != nullptr ? last->timestampNs : 0;
+    const u64 t0 = stroke::monotonicNowNs();
     Result<app::LiveStrokeOutcome> ended = live_->end(last);
+    if (traceOn()) {
+        std::fprintf(stderr, "[mari-gui] LiveStroke::end %.2f ms\n",
+                     static_cast<f64>(stroke::monotonicNowNs() - t0) / 1e6);
+    }
     Rect dirty = live_->takeDisplayDirty();
     live_.reset();
     if (!ended.ok()) {
@@ -395,7 +454,12 @@ void CanvasWidget::finishStroke(const stroke::RawInputEvent* last) {
         dirty = dirty.isEmpty() ? ended.value().dirtyBounds : dirty.united(ended.value().dirtyBounds);
     }
     scheduleCanvasRepaint(dirty, inputNs);
+    const u64 t1 = stroke::monotonicNowNs();
     emit strokeFinished(ended.value());
+    if (traceOn()) {
+        std::fprintf(stderr, "[mari-gui] strokeFinished handlers %.2f ms\n",
+                     static_cast<f64>(stroke::monotonicNowNs() - t1) / 1e6);
+    }
 }
 
 // ── 뷰 ───────────────────────────────────────────────────────────────────
@@ -406,7 +470,7 @@ void CanvasWidget::applyView() {
         return;
     }
     pushViewToPointer();
-    update();
+    invalidateView();
     emit viewChanged();
 }
 
@@ -481,9 +545,79 @@ void CanvasWidget::fitToView() {
     applyView();
 }
 
+void CanvasWidget::toggleMirror() {
+    if (live_ != nullptr) {
+        return;
+    }
+    mari::win::ViewState st = view_.state();
+    st.mirrorX = !st.mirrorX;
+    // 미러 중심은 화면 중앙: 앵커를 화면 중앙으로 옮겨 놓고 뒤집어야 그림이 제자리에서 뒤집힌다.
+    const f64 s = dpr();
+    const PointF center{static_cast<f32>(width() * s * 0.5), static_cast<f32>(height() * s * 0.5)};
+    st.anchorCanvas = view_.toCanvas(center);
+    st.anchorScreen = center;
+    view_.setState(st);
+    applyView();
+}
+
+void CanvasWidget::resetRotation() {
+    if (live_ != nullptr) {
+        return;
+    }
+    mari::win::ViewState st = view_.state();
+    const f64 s = dpr();
+    const PointF center{static_cast<f32>(width() * s * 0.5), static_cast<f32>(height() * s * 0.5)};
+    st.anchorCanvas = view_.toCanvas(center);
+    st.anchorScreen = center;
+    st.rotationDeg = 0.0;
+    view_.setState(st);
+    applyView();
+}
+
+// ── 도구 ─────────────────────────────────────────────────────────────────
+
+void CanvasWidget::setTool(Tool t) {
+    if (tool_ == t) {
+        return;
+    }
+    tool_ = t;
+    setCursor(t == Tool::Hand ? Qt::OpenHandCursor : Qt::CrossCursor);
+    update();
+    emit toolChanged(t);
+}
+
+void CanvasWidget::setBrushDiameter(f64 px) {
+    brushDiameter_ = px;
+    updateHoverRect();
+}
+
+QColor CanvasWidget::pickColorAt(const QPointF& logicalPos) const {
+    if (backing_.isNull()) {
+        return QColor();
+    }
+    const QPointF c = canvasToWidget().inverted().map(logicalPos);
+    const QPoint px(static_cast<int>(std::floor(c.x())), static_cast<int>(std::floor(c.y())));
+    if (!backing_.rect().contains(px)) {
+        return QColor();
+    }
+    // premultiplied → straight. 알파 0 이면 "투명" 이라 배경(흰색)으로 본다.
+    const QRgb v = backing_.pixel(px);
+    const int a = qAlpha(v);
+    if (a == 0) {
+        return QColor(255, 255, 255);
+    }
+    return QColor(qRed(v) * 255 / a, qGreen(v) * 255 / a, qBlue(v) * 255 / a);
+}
+
+void CanvasWidget::updateHoverRect() {
+    const qreal r = std::max(1.5, brushDiameter_ * view_.state().zoom / dpr() * 0.5) + 3.0;
+    update(QRectF(hoverPos_.x() - r, hoverPos_.y() - r, 2 * r, 2 * r).toAlignedRect());
+}
+
 // ── 마우스·키보드 (그리기가 아닌 조작만) ────────────────────────────────
 //
-// 🔴 그리기는 여기로 오지 않는다. 왼쪽 버튼·펜 접촉은 nativeEvent 가 먼저 먹는다.
+// 🔴 그리기는 여기로 오지 않는다. 왼쪽 버튼·펜 접촉은 nativeEventFilter 가 먼저 먹는다 —
+//    단, 뷰 드래그(Space·손 도구)와 스포이드일 때는 필터가 넘겨 주므로 여기로 온다.
 
 void CanvasWidget::wheelEvent(QWheelEvent* e) {
     const f64 steps = e->angleDelta().y() / 120.0;
@@ -494,10 +628,23 @@ void CanvasWidget::wheelEvent(QWheelEvent* e) {
 }
 
 void CanvasWidget::mousePressEvent(QMouseEvent* e) {
-    if (e->button() == Qt::MiddleButton) {
+    const bool leftDrag = e->button() == Qt::LeftButton && viewDragActive();
+    if (e->button() == Qt::MiddleButton || leftDrag) {
         panning_ = true;
         panLast_ = e->position();
-        setCursor(Qt::ClosedHandCursor);
+        dragStart_ = e->position();
+        dragStartView_ = view_.state();
+        if (viewMode_ == ViewMode::None) {
+            setCursor(Qt::ClosedHandCursor);
+        }
+        e->accept();
+        return;
+    }
+    if (e->button() == Qt::LeftButton && (tool_ == Tool::Eyedropper || altEyedropper_)) {
+        const QColor c = pickColorAt(e->position());
+        if (c.isValid()) {
+            emit colorPicked(c);
+        }
         e->accept();
         return;
     }
@@ -506,36 +653,112 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
     if (panning_) {
-        panBy(e->position() - panLast_);
+        if (viewMode_ == ViewMode::Zoom) {
+            // 오른쪽으로 끌면 확대, 왼쪽이면 축소. 누른 점을 중심으로.
+            const f64 dx = e->position().x() - dragStart_.x();
+            mari::win::ViewState st = dragStartView_;
+            view_.setState(st);
+            zoomBy(std::pow(1.01, dx), dragStart_);
+        } else if (viewMode_ == ViewMode::Rotate) {
+            const QPointF c = QRectF(rect()).center();
+            const f64 a0 = std::atan2(dragStart_.y() - c.y(), dragStart_.x() - c.x());
+            const f64 a1 = std::atan2(e->position().y() - c.y(), e->position().x() - c.x());
+            mari::win::ViewState st = dragStartView_;
+            view_.setState(st);
+            rotateBy((a1 - a0) * 180.0 / 3.14159265358979323846);
+        } else {
+            panBy(e->position() - panLast_);
+        }
         panLast_ = e->position();
         e->accept();
         return;
     }
+    if (e->buttons() & Qt::LeftButton) {
+        if (tool_ == Tool::Eyedropper || altEyedropper_) {
+            const QColor c = pickColorAt(e->position());
+            if (c.isValid()) {
+                emit colorPicked(c);
+            }
+        }
+    }
+    // 호버 윤곽: 이전 자리와 새 자리만 갱신한다(신호 없음, 작은 rect 두 개).
+    updateHoverRect();
+    hoverPos_ = e->position();
+    hoverVisible_ = true;
+    updateHoverRect();
     QWidget::mouseMoveEvent(e);
 }
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) {
-    if (e->button() == Qt::MiddleButton && panning_) {
+    if (panning_ && (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton)) {
         panning_ = false;
-        unsetCursor();
+        setCursor(tool_ == Tool::Hand ? Qt::OpenHandCursor : Qt::CrossCursor);
         e->accept();
         return;
     }
     QWidget::mouseReleaseEvent(e);
 }
 
+void CanvasWidget::enterEvent(QEnterEvent* e) {
+    hoverVisible_ = true;
+    hoverPos_ = e->position();
+    updateHoverRect();
+    QWidget::enterEvent(e);
+}
+
+void CanvasWidget::leaveEvent(QEvent* e) {
+    hoverVisible_ = false;
+    updateHoverRect();
+    QWidget::leaveEvent(e);
+}
+
 void CanvasWidget::keyPressEvent(QKeyEvent* e) {
-    switch (e->key()) {
-    case Qt::Key_BracketLeft: rotateBy(-15.0); break;
-    case Qt::Key_BracketRight: rotateBy(15.0); break;
-    case Qt::Key_0: resetView(); break;
-    case Qt::Key_F: fitToView(); break;
-    case Qt::Key_Plus:
-    case Qt::Key_Equal: zoomBy(1.25, QRectF(rect()).center()); break;
-    case Qt::Key_Minus: zoomBy(0.8, QRectF(rect()).center()); break;
-    default: QWidget::keyPressEvent(e); return;
+    if (e->isAutoRepeat()) {
+        e->accept();
+        return;
     }
-    e->accept();
+    // Space 계열은 "눌린 동안 모드" 다. 수식키는 누른 시점의 것을 본다.
+    if (e->key() == Qt::Key_Space && live_ == nullptr) {
+        spaceDown_ = true;
+        const auto mods = e->modifiers();
+        viewMode_ = (mods & Qt::ControlModifier) ? ViewMode::Zoom
+                    : (mods & Qt::ShiftModifier) ? ViewMode::Rotate
+                                                 : ViewMode::Pan;
+        setCursor(viewMode_ == ViewMode::Pan ? Qt::OpenHandCursor : Qt::SizeAllCursor);
+        update();
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Alt) {
+        altEyedropper_ = true;
+        setCursor(Qt::PointingHandCursor);
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
+}
+
+void CanvasWidget::keyReleaseEvent(QKeyEvent* e) {
+    if (e->isAutoRepeat()) {
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Space) {
+        spaceDown_ = false;
+        viewMode_ = ViewMode::None;
+        panning_ = false;
+        setCursor(tool_ == Tool::Hand ? Qt::OpenHandCursor : Qt::CrossCursor);
+        update();
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Alt) {
+        altEyedropper_ = false;
+        setCursor(tool_ == Tool::Hand ? Qt::OpenHandCursor : Qt::CrossCursor);
+        e->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(e);
 }
 
 } // namespace mari::ui

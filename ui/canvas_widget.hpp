@@ -30,7 +30,9 @@
 #include <mari/win/input/view_transform.hpp>
 
 #include <QAbstractNativeEventFilter>
+#include <QColor>
 #include <QImage>
+#include <QRegion>
 #include <QWidget>
 
 #include <functional>
@@ -50,6 +52,9 @@ struct LatencyStats {
     u64 over16 = 0;
 };
 
+/// 캔버스 도구. 지우개는 토글이 아니라 도구다(페인팅 앱 관례). 펜 뒤집기는 여전히 우선한다.
+enum class Tool { Brush, Eraser, Eyedropper, Hand };
+
 class CanvasWidget final : public QWidget,
                            private mari::win::IPointerTarget,
                            private QAbstractNativeEventFilter {
@@ -68,6 +73,14 @@ public:
     /// 캔버스 영역이 바깥에서 바뀌었다(실행취소·레이어 조작). 비면 전부.
     void invalidateCanvas(const Rect& canvasRect = Rect{});
 
+    // ── 도구 ─────────────────────────────────────────────────────────────
+    void setTool(Tool t);
+    [[nodiscard]] Tool tool() const noexcept { return tool_; }
+    /// 호버 윤곽에 쓸 붓 지름(캔버스 px). 툴바가 바뀔 때마다 넣는다.
+    void setBrushDiameter(f64 px);
+    /// 합성 결과에서 색을 읽는다(스포이드). 캔버스 밖이면 무효 색.
+    [[nodiscard]] QColor pickColorAt(const QPointF& logicalPos) const;
+
     // ── 뷰 ───────────────────────────────────────────────────────────────
     [[nodiscard]] const mari::win::ViewState& viewState() const noexcept { return view_.state(); }
     /// 화면 점(논리 px)을 중심으로 배율을 곱한다.
@@ -77,6 +90,8 @@ public:
     void resetView();
     /// 캔버스 전체가 보이게 맞춘다.
     void fitToView();
+    void toggleMirror();
+    void resetRotation();
 
     [[nodiscard]] const LatencyStats& latency() const noexcept { return latency_; }
     [[nodiscard]] const mari::win::PointerStats& pointerStats() const noexcept { return pointer_.stats(); }
@@ -89,6 +104,9 @@ signals:
     void strokeRefused(const QString& why);
     void viewChanged();
     void latencyUpdated();
+    /// 스포이드로 색을 집었다.
+    void colorPicked(const QColor& c);
+    void toolChanged(mari::ui::Tool t);
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -102,6 +120,9 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void keyReleaseEvent(QKeyEvent* e) override;
+    void leaveEvent(QEvent* e) override;
+    void enterEvent(QEnterEvent* e) override;
 
 private:
     // IPointerTarget — 메시지 펌프 스레드(= UI 스레드)에서 불린다.
@@ -125,6 +146,13 @@ private:
     [[nodiscard]] f64 dpr() const;
     [[nodiscard]] QRect canvasToWidgetRect(const Rect& r) const;
     [[nodiscard]] QTransform canvasToWidget() const;
+    /// Space 계열 뷰 모드. 눌린 동안만 산다.
+    enum class ViewMode { None, Pan, Zoom, Rotate };
+    [[nodiscard]] bool viewDragActive() const noexcept { return viewMode_ != ViewMode::None || tool_ == Tool::Hand; }
+    void updateHoverRect();
+    /// viewDirty_ 를 viewCache_ 에 반영한다. paintEvent 가 부른다.
+    void renderViewCache();
+    void invalidateView();  ///< 뷰가 바뀌었다 — 캐시 전체를 버린다
 
     app::Document* doc_ = nullptr;
     std::function<app::LiveStrokeConfig()> cfgProvider_;
@@ -132,6 +160,11 @@ private:
     mari::win::PointerInput pointer_;
     mari::win::ViewTransform view_;
     QImage backing_;           ///< 캔버스 크기, ARGB32 premultiplied. 합성 결과
+    /// 뷰 캐시: 위젯 크기(물리 px)의, 변환·체커까지 끝난 화면 이미지. paintEvent 는 이걸 블릿만 한다.
+    /// 🔴 레이아웃·포커스 변화로 캔버스 전체가 다시 그려질 때 1920×1080 을 매번 축소 샘플링하면
+    ///    40ms 가 든다(실측: 획마다 >16ms 한 번). 캐시가 있으면 그 경우는 memcpy 다.
+    QImage viewCache_;
+    QRegion viewDirty_;        ///< viewCache_ 에서 다시 만들어야 할 영역(논리 px)
     std::vector<u8> straight_; ///< 합성기 출력(straight RGBA) 임시 버퍼. 더티 영역 크기만큼
     Rect pendingComposite_{};  ///< 아직 백킹에 합성하지 않은 캔버스 영역
     u64 pendingInputNs_ = 0;   ///< 화면에 아직 안 오른 가장 이른 입력 시각. 0 이면 없음
@@ -140,9 +173,18 @@ private:
     HWND topHwnd_ = nullptr;
     bool needFit_ = true;      ///< 레이아웃이 실제 크기를 주면 한 번 fitToView()
     u32 bypassId_ = 0;         ///< Qt 에 넘긴(그리기 아닌) 포인터 id
-    // 마우스 가운데 버튼 팬
+    // 마우스 가운데 버튼·Space·손 도구 드래그
     bool panning_ = false;
     QPointF panLast_{};
+    QPointF dragStart_{};
+    mari::win::ViewState dragStartView_{};
+    ViewMode viewMode_ = ViewMode::None;
+    bool spaceDown_ = false;
+    Tool tool_ = Tool::Brush;
+    bool altEyedropper_ = false;   ///< Alt 를 누른 동안 임시 스포이드
+    f64 brushDiameter_ = 10.0;
+    QPointF hoverPos_{};
+    bool hoverVisible_ = false;
     u64 strokeSeed_ = 0;
 };
 

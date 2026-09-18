@@ -27,8 +27,9 @@ GUI: ui/ 컴파일·링크 됨. 🔴 실행 미검증 (아래)
 | 3.4 최소 UI | ✅ 툴바·레이어 도크·메뉴·상태 표시줄 (`ui/main_window.*`) |
 | 3.5 창 방식 | 단일 창 + 도킹으로 시작했다. 캔버스는 이 결정을 모른다 |
 | LGPL 게이트 | ✅ `ui/CMakeLists.txt` 의 `mari_check_qt_license()` — 허용 밖 Qt 모듈이면 FATAL_ERROR |
-| **GUI 실행** | 🔴 **미검증.** 창은 떴으나 몇 초 뒤 0xc0000409(abort). 원인 미상 — 아래 0.2 |
-| 펜→화면 16ms | 🔴 못 쟀다. 측정 코드는 들어가 있다(`CanvasWidget::latency()`, 상태 표시줄) |
+| **GUI 실행** | ✅ 뜨고 그려진다. 마우스 자동 입력으로 획·기록·화면 검증(커밋 ac00dad 이후) |
+| 펜→화면 16ms | ⚠️ 마우스로만 쟀다: 획 중간 프레임 **평균 ~2ms**. down/up 프레임은 입력이 ~48ms 묵어 도착(마우스→포인터 변환 추정). **실제 펜으로 재확인** — docs/09 4절 |
+| UI 관례 반영 | ✅ docs/09 — 도구상자·지수 크기 슬라이더·색상환·레이어 패널·표준 단축키·다크 테마·뷰 캐시 |
 
 ### 0.1 빌드하는 법 (Windows)
 
@@ -58,7 +59,12 @@ vcpkg 는 `C:\Dev\vcpkg` (zlib · libpng · sqlite3, x64-windows). 다른 곳이
    `include/mari/test/sys.hpp` 의 `runProcess()`(CreateProcessW) · `rssBytes()`(GetProcessMemoryInfo) 로
    갈았다. POSIX 경로는 예전 그대로다.
 
-### 0.2 🔴 지금 막힌 것 — 다음 사람이 제일 먼저 할 일
+### 0.2 지금 막힌 것 — 다음 사람이 제일 먼저 할 일
+
+> 2026-09-18 저녁 갱신: (a)(b) 는 **해결됐다.** SAC 는 사용자가 껐고, abort 는 한글 경로(→ `core/fs.hpp`)였다.
+> 그 뒤 무작위 힙 손상은 **한국어 로캘 + PowerShell 에서 띄운 ninja 가 헤더 의존성을 추적하지 못한 것**이
+> 원인이었다 — `build-win.cmd` 가 `chcp 65001` 로 고정한다. 자세한 것은 커밋 ac00dad 와 그 다음 커밋 메시지.
+> 아래 (a)(b) 원문은 기록으로 남긴다. 남은 것은 (c): **실제 펜으로 16ms 재기.**
 
 **(a) Smart App Control 이 로컬 빌드를 전부 막는다.** 이 머신에서 작업 도중 SAC 가 평가 모드 → 강제로
 넘어갔다(`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy` 의 `VerifiedAndReputablePolicyState=1`,
