@@ -10,6 +10,7 @@
 #include <mari/agent/session.hpp>
 
 #include <mari/app/document.hpp>
+#include <mari/app/live_stroke.hpp>
 #include <mari/app/stroke_entry.hpp>
 #include <mari/core/undo.hpp>
 #include <mari/ora/image.hpp>
@@ -79,40 +80,9 @@ pipe_ns::SmoothingMode smoothingFromNumber(f64 v) {
     return pipe_ns::SmoothingMode::Strong;
 }
 
-/// 스탬프가 점에서 벗어날 수 있는 최대 거리(px). 실행취소 범위를 잡는 데 쓴다.
-/// **넉넉하게** 잡는다 — 모자라면 실행취소가 거짓말을 한다.
-f32 strokeMargin(const brush::MariBrushPreset& p) {
-    f32 sizeMul = 1.0f;
-    f32 scatter = 0.0f;
-    for (const brush::DynamicLink& l : p.dynamics) {
-        f32 maxY = 1.0f;
-        for (const brush::CurvePoint& c : l.curve.points) {
-            maxY = std::max(maxY, std::abs(c.y));
-        }
-        if (l.output == brush::DynamicOutput::Size) {
-            sizeMul = std::max(sizeMul, maxY * std::max(1.0f, std::abs(l.amount)));
-        } else if (l.output == brush::DynamicOutput::Scatter) {
-            scatter += maxY * std::abs(l.amount);
-        }
-    }
-    const f32 d = p.tip.diameter * sizeMul;
-    return d * (0.5f + scatter) + static_cast<f32>(kTileSize);
-}
-
-void tilesForRect(const Rect& r, DirtyTiles& out) {
-    if (r.isEmpty()) {
-        return;
-    }
-    const i32 tx0 = tileIndexFor(r.x);
-    const i32 ty0 = tileIndexFor(r.y);
-    const i32 tx1 = tileIndexFor(r.right() - 1);
-    const i32 ty1 = tileIndexFor(r.bottom() - 1);
-    for (i32 ty = ty0; ty <= ty1; ++ty) {
-        for (i32 tx = tx0; tx <= tx1; ++tx) {
-            out.push_back(TileCoord{tx, ty});
-        }
-    }
-}
+// strokeMargin() · tilesForRect() 는 app/live_stroke.hpp 로 옮겼다 — 사람 펜 경로와 한 벌이다.
+using app::strokeMargin;
+using app::tilesForRect;
 
 struct StrokePoint {
     f64 x = 0.0;

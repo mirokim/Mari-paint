@@ -11,11 +11,13 @@ set(MARI_APP_SOURCES
     src/events.cpp
     src/document.cpp
     src/stroke_entry.cpp
+    src/live_stroke.cpp
     src/application.cpp
 )
 
 add_library(mari_app STATIC ${MARI_APP_SOURCES})
-target_link_libraries(mari_app PUBLIC mari::common mari::core mari::crypto mari::io_ora)
+# stroke: LiveStroke 가 파이프라인·네이티브 엔진을 굴린다(사람 펜 경로).
+target_link_libraries(mari_app PUBLIC mari::common mari::core mari::crypto mari::io_ora mari::stroke)
 
 add_library(mari::app ALIAS mari_app)
 mari_register_module(mari_app)

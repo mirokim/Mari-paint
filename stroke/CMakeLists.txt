@@ -8,6 +8,7 @@ set(MARI_STROKE_SOURCES
     src/native_engine.cpp
     src/pipeline.cpp
     src/engine_factory.cpp
+    src/builtin_presets.cpp
 )
 
 add_library(mari_stroke STATIC ${MARI_STROKE_SOURCES})

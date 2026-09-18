@@ -61,8 +61,6 @@ add_subdirectory(record)
 # mcp — MCP 서버 어댑터(docs/05 4절 · A3). agent-api 위에 씌우는 **얇은** 전송 계층이고
 #       도구 목록은 agent 의 연산 표에서 생성된다. cli 보다 먼저여야 한다(cli 가 링크한다).
 add_subdirectory(mcp)
-# cli — 헤드리스 모드 + mari-paint 실행파일(docs/05 2.8). Qt 없이 빌드된다.
-add_subdirectory(cli)
 
 # Windows 전용 레이어. 각 파일 안에도 WIN32 가드가 있지만 여기서도 명시적으로 막는다.
 # platform/win 이 hosts 보다 먼저여야 한다(hosts/CMakeLists.txt 가 FATAL_ERROR 로 막는다).
@@ -71,7 +69,13 @@ if(WIN32)
     enable_language(C RC)
     add_subdirectory(platform/win)
     add_subdirectory(hosts)
+    # ui — Qt GUI. Qt 가 없으면 스스로 빠진다(MARI_HAS_GUI OFF).
+    add_subdirectory(ui)
 endif()
+
+# cli — 헤드리스 모드 + mari-paint 실행파일(docs/05 2.8). Qt 없이도 빌드된다.
+#       ui 뒤에 온다 — Qt 가 있으면 같은 바이너리에 GUI 를 싣는다(MARI_HAS_GUI).
+add_subdirectory(cli)
 
 if(MARI_BUILD_TESTS)
     add_subdirectory(tests)

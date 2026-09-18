@@ -32,8 +32,11 @@ if "%MODE%"=="build" goto build
 if "%MODE%"=="test" goto test
 
 :configure
+rem Qt 6 (LGPL 모듈만 설치: qtbase · qtsvg). 없으면 GUI 없이 빌드된다.
+if "%QT_DIR%"=="" set QT_DIR=C:\Qt\6.9.3\msvc2022_64
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-    "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" || exit /b 1
+    "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" ^
+    "-DCMAKE_PREFIX_PATH=%QT_DIR%" || exit /b 1
 if "%MODE%"=="configure" exit /b 0
 
 :build

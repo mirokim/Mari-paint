@@ -1,6 +1,8 @@
 // Mari Paint — 에이전트 세션 구현. 선언은 include/mari/agent/session.hpp.
 #include <mari/agent/session.hpp>
 
+#include <mari/brush/builtin.hpp>
+
 #include <mari/app/document.hpp>
 
 #include <algorithm>
@@ -170,31 +172,10 @@ Result<std::unique_ptr<AgentSession>> AgentSession::open(std::string_view agentI
 }
 
 void AgentSession::installBuiltinBrushes() {
-    auto add = [&](const char* name, f32 diameter, f32 hardness, f32 spacing, f32 opacity,
-                   bool pressureSize) {
-        brush::MariBrushPreset p;
-        p.name = name;
-        p.sourceFormat = "native";
-        p.engine = "native";
-        p.tip.diameter = diameter;
-        p.tip.hardness = hardness;
-        p.spacing = spacing;
-        p.opacity = opacity;
-        if (pressureSize) {
-            brush::DynamicLink link;
-            link.input = brush::DynamicInput::Pressure;
-            link.output = brush::DynamicOutput::Size;
-            link.amount = 1.0f;
-            link.curve.points = {{0.0f, 0.15f}, {1.0f, 1.0f}};
-            p.dynamics.push_back(link);
-        }
+    // 🔴 목록은 brush/builtin.hpp 한 곳이다. GUI 툴바도 같은 것을 쓴다.
+    for (brush::MariBrushPreset& p : brush::builtinPresets()) {
         (void)addBrush(std::move(p), "native", {});
-    };
-    // 기본 네 자루. 런타임 발견이 원칙이므로 목록은 brush.list 로 읽게 한다.
-    add("연필", 6.0f, 0.85f, 0.08f, 0.9f, true);
-    add("잉크펜", 10.0f, 1.0f, 0.06f, 1.0f, true);
-    add("에어브러시", 48.0f, 0.15f, 0.05f, 0.35f, true);
-    add("납작붓", 28.0f, 0.6f, 0.12f, 1.0f, false);
+    }
     currentBrush_ = brushes_.empty() ? kInvalidBrushId : brushes_.front().id;
 }
 

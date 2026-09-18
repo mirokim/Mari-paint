@@ -4,12 +4,22 @@
 //    그래야 테스트가 스트림을 갈아끼워 같은 코드 경로를 검증할 수 있다.
 //    (docs/05 2.8 "같은 바이너리, 같은 코드 경로")
 #include <mari/cli/runner.hpp>
+#if defined(MARI_HAS_GUI)
+#include "gui.hpp"
+#endif
 
 #include <iostream>
 #include <string>
 #include <vector>
 
 int main(int argc, char** argv) {
+#if defined(MARI_HAS_GUI)
+    // 인자가 없으면 GUI 다. 인자가 하나라도 있으면 헤드리스 CLI 다 — 스크립트가 실수로
+    // 창을 띄우는 일은 없고, 사람이 더블클릭하면 창이 뜬다.
+    if (argc <= 1) {
+        return mari::ui::runGui(argc, argv);
+    }
+#endif
     std::vector<std::string> args;
     args.reserve(static_cast<std::size_t>(argc > 1 ? argc - 1 : 0));
     for (int i = 1; i < argc; ++i) {

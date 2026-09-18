@@ -29,6 +29,24 @@ add_executable(mari-paint src/main.cpp)
 target_link_libraries(mari-paint PRIVATE mari::common mari::cli)
 set_target_properties(mari-paint PROPERTIES OUTPUT_NAME "mari-paint")
 
+# 🔴 같은 바이너리, 같은 코드 경로(docs/05 2.8). Qt 가 있으면 GUI 가 여기 실린다.
+#    인자 없이 뜨면 GUI, 인자가 있으면 헤드리스 CLI 다. 헤드리스 경로는 Qt 를 건드리지 않는다.
+if(MARI_HAS_GUI)
+    target_link_libraries(mari-paint PRIVATE mari::ui)
+    target_compile_definitions(mari-paint PRIVATE MARI_HAS_GUI=1)
+    # GUI 서브시스템으로 만들면 콘솔이 안 뜨지만 헤드리스 stdout 이 죽는다. 콘솔로 둔다.
+    # Qt 런타임 DLL 을 실행파일 옆에 놓는다 — 없으면 뜨지도 않는다.
+    find_program(MARI_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
+    if(MARI_WINDEPLOYQT)
+        add_custom_command(TARGET mari-paint POST_BUILD
+            COMMAND "${MARI_WINDEPLOYQT}" --no-translations --no-compiler-runtime
+                    --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler
+                    "$<TARGET_FILE:mari-paint>"
+            COMMENT "windeployqt: Qt 런타임을 mari-paint.exe 옆에 놓는다"
+            VERBATIM)
+    endif()
+endif()
+
 # 🔴 진짜 프로세스를 띄워서 검증하는 테스트.
 #    tests/ 의 자동 발견(test_*.cpp)에 걸리지 않게 파일 이름을 달리 두고 여기서 직접 건다 —
 #    바이너리 경로를 컴파일 타임에 박아 넣어야 해서 타깃을 우리가 쥐고 있어야 한다.
