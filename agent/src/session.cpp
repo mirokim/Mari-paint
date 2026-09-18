@@ -1,6 +1,8 @@
 // Mari Paint — 에이전트 세션 구현. 선언은 include/mari/agent/session.hpp.
 #include <mari/agent/session.hpp>
 
+#include <mari/agent/brush_library.hpp>
+
 #include <mari/brush/builtin.hpp>
 
 #include <mari/app/document.hpp>
@@ -174,9 +176,48 @@ Result<std::unique_ptr<AgentSession>> AgentSession::open(std::string_view agentI
 void AgentSession::installBuiltinBrushes() {
     // 🔴 목록은 brush/builtin.hpp 한 곳이다. GUI 툴바도 같은 것을 쓴다.
     for (brush::MariBrushPreset& p : brush::builtinPresets()) {
-        (void)addBrush(std::move(p), "native", {});
+        (void)addBrush(std::move(p), "builtin", {});
     }
     currentBrush_ = brushes_.empty() ? kInvalidBrushId : brushes_.front().id;
+    // 사용자 폴더(.mbp) — GUI 와 헤드리스가 같은 폴더를 본다.
+    brushDir_ = defaultBrushDir();
+    reloadUserBrushes();
+}
+
+void AgentSession::reloadUserBrushes() {
+    // 내장(builtin)만 남기고 다시 읽는다. 현재 브러시가 사라지면 첫 브러시로.
+    brushes_.erase(std::remove_if(brushes_.begin(), brushes_.end(),
+                                  [](const BrushEntry& b) { return b.source != "builtin"; }),
+                   brushes_.end());
+    std::vector<std::string> skipped;
+    for (brush::MariBrushPreset& p : loadPresetDir(brushDir_, &skipped)) {
+        const std::string src = p.sourceFormat.empty() ? std::string("native") : p.sourceFormat;
+        (void)addBrush(std::move(p), src, {});
+    }
+    bool stillThere = false;
+    for (const BrushEntry& b : brushes_) stillThere = stillThere || b.id == currentBrush_;
+    if (!stillThere) currentBrush_ = brushes_.empty() ? kInvalidBrushId : brushes_.front().id;
+}
+
+Result<void> AgentSession::removeBrush(BrushId id) {
+    for (auto it = brushes_.begin(); it != brushes_.end(); ++it) {
+        if (it->id != id) continue;
+        if (it->source == "builtin") return Err("내장 브러시는 지울 수 없다", ErrorCode::InvalidArgument);
+        brushes_.erase(it);
+        if (currentBrush_ == id) currentBrush_ = brushes_.empty() ? kInvalidBrushId : brushes_.front().id;
+        return Ok();
+    }
+    return Err("그런 브러시 id 가 없다", ErrorCode::NotFound);
+}
+
+Result<void> AgentSession::updateBrush(BrushId id, brush::MariBrushPreset preset) {
+    for (BrushEntry& b : brushes_) {
+        if (b.id == id) {
+            b.preset = std::move(preset);
+            return Ok();
+        }
+    }
+    return Err("그런 브러시 id 가 없다", ErrorCode::NotFound);
 }
 
 BrushId AgentSession::addBrush(brush::MariBrushPreset preset, std::string source,

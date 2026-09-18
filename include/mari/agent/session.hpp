@@ -148,6 +148,14 @@ public:
     /// 임포트한 브러시를 등록하고 새 id 를 준다.
     BrushId addBrush(brush::MariBrushPreset preset, std::string source,
                      std::vector<std::string> notes);
+    /// 등록된 브러시를 지운다(내장은 못 지운다).
+    [[nodiscard]] Result<void> removeBrush(BrushId id);
+    /// 등록된 브러시의 프리셋을 바꾼다.
+    [[nodiscard]] Result<void> updateBrush(BrushId id, brush::MariBrushPreset preset);
+    /// 사용자 브러시 폴더(.mbp). 세션이 열릴 때 내장 뒤에 이어서 읽는다.
+    [[nodiscard]] const std::string& brushDir() const noexcept { return brushDir_; }
+    /// 폴더를 다시 읽어 사용자 브러시를 갱신한다(GUI 가 파일을 바꿨을 때).
+    void reloadUserBrushes();
 
     // ── 이벤트 (docs/05 2.7 · docs/07) ───────────────────────────────────
 
@@ -198,6 +206,7 @@ private:
     SnapshotStore snaps_{256};
     RoleTags roles_;
     std::vector<BrushEntry> brushes_;
+    std::string brushDir_;
     std::deque<QueuedEvent> events_;
     std::vector<std::string> eventFilter_;
     std::vector<u64> pushSubs_; ///< 이 세션이 건 푸시 구독. 소멸자가 전부 뗀다
@@ -263,6 +272,9 @@ Result<Json> selectFeather(AgentSession&, const Json&);
 
 Result<Json> brushList(AgentSession&, const Json&);
 Result<Json> brushImport(AgentSession&, const Json&);
+Result<Json> brushSave(AgentSession&, const Json&);
+Result<Json> brushRemove(AgentSession&, const Json&);
+Result<Json> brushExport(AgentSession&, const Json&);
 Result<Json> brushSet(AgentSession&, const Json&);
 Result<Json> brushDescribe(AgentSession&, const Json&);
 

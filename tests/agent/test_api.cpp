@@ -7,6 +7,7 @@
 //   · `capabilities` 정확성   — 표 == 디스패치 == MCP 도구 목록의 원본
 //   · `describe` 정확성       — docs/05 2.4 의 그 문장 모양이 실제로 나온다
 #include <mari/agent/capabilities.hpp>
+#include <mari/agent/brush_library.hpp>
 #include <mari/agent/session.hpp>
 #include <mari/crypto/canvas_hash.hpp>
 #include <mari/crypto/sha256.hpp>
@@ -19,6 +20,8 @@
 using namespace mari;
 using mari::agent::AgentSession;
 using mari::agent::Json;
+using mari::agent::presetToJson;
+using mari::agent::presetFromJson;
 
 namespace {
 
@@ -215,7 +218,7 @@ MARI_TEST(capabilities_matches_dispatch) {
                              "layer.group", "layer.ungroup", "stroke", "fill", "bucket",
                              "erase", "gradient", "transform", "select", "select.invert",
                              "select.expand", "select.feather", "brush.list", "brush.import",
-                             "brush.set", "brush.describe", "render", "thumbnail", "compare",
+                             "brush.set", "brush.describe", "brush.save", "brush.remove", "brush.export", "render", "thumbnail", "compare",
                              "batch", "events.subscribe", "events.unsubscribe"}) {
         CHECK(agent::findOp(name) != nullptr);
     }
@@ -969,6 +972,125 @@ MARI_TEST(agent_stroke_accepts_tilt_and_time) {
     bp.push(std::move(p));
     bad.set("points", std::move(bp));
     CHECK(!s->execute(bad)["ok"].asBool());
+}
+
+// ── 브러시 라이브러리(.mbp) ───────────────────────────────────────────────
+
+MARI_TEST(brush_preset_round_trips_through_mbp_json) {
+    brush::MariBrushPreset p;
+    p.name = "왕복 붓";
+    p.sourceFormat = "native";
+    p.tip.kind = brush::TipKind::Bitmap;
+    p.tip.bitmap = brush::GrayImage{3, 2, {0, 64, 128, 192, 255, 7}};
+    p.tip.diameter = 33.5f;
+    p.tip.angle = 12.0f;
+    p.tip.aspectRatio = 0.4f;
+    p.tip.hardness = 0.7f;
+    p.spacing = 0.15f;
+    p.opacity = 0.8f;
+    p.flow = 0.6f;
+    p.blendMode = BlendMode::Multiply;
+    brush::DynamicLink l;
+    l.input = brush::DynamicInput::TiltX;
+    l.output = brush::DynamicOutput::Rotation;
+    l.amount = 0.5f;
+    l.curve.points = {{0.0f, 0.1f}, {1.0f, 0.9f}};
+    p.dynamics.push_back(l);
+    p.texture = brush::BrushTexture{};
+    p.texture->image = brush::GrayImage{2, 2, {1, 2, 3, 4}};
+    p.texture->scale = 2.5f;
+    p.texture->depth = 0.3f;
+    p.texture->blendMode = BlendMode::Subtract;
+    p.texture->anchoredToCanvas = false;
+    p.dual = brush::DualBrush{};
+    p.dual->tip.diameter = 9.0f;
+    p.dual->count = 3;
+    p.dual->blendMode = BlendMode::Darken;
+    p.colorDynamics.hueJitter = 0.25f;
+    p.colorDynamics.perTip = false;
+    p.scatterCount = 4;
+    p.wetEdges = true;
+    p.noise = 0.5f;
+    p.extraParams.emplace_back("abr/flip", 1.0f);
+
+    const Json j = presetToJson(p);
+    const Result<Json> re = Json::parse(j.dump());
+    CHECK(re.ok());
+    Result<brush::MariBrushPreset> back = presetFromJson(re.value());
+    CHECK(back.ok());
+    if (!back.ok()) return;
+    const brush::MariBrushPreset& q = back.value();
+    CHECK_EQ(q.name, p.name);
+    CHECK(q.tip.kind == brush::TipKind::Bitmap);
+    CHECK(q.tip.bitmap.pixels == p.tip.bitmap.pixels);
+    CHECK_NEAR(q.tip.diameter, 33.5f, 1e-4);
+    CHECK_NEAR(q.tip.aspectRatio, 0.4f, 1e-4);
+    CHECK(q.blendMode == BlendMode::Multiply);
+    CHECK_EQ(q.dynamics.size(), usize{1});
+    CHECK(q.dynamics[0].input == brush::DynamicInput::TiltX);
+    CHECK(q.dynamics[0].output == brush::DynamicOutput::Rotation);
+    CHECK_NEAR(q.dynamics[0].curve.points[1].y, 0.9f, 1e-4);
+    CHECK(q.texture.has_value());
+    CHECK(q.texture->image.pixels == p.texture->image.pixels);
+    CHECK(q.texture->blendMode == BlendMode::Subtract);
+    CHECK(!q.texture->anchoredToCanvas);
+    CHECK(q.dual.has_value());
+    CHECK_EQ(q.dual->count, 3);
+    CHECK(q.dual->blendMode == BlendMode::Darken);
+    CHECK_NEAR(q.colorDynamics.hueJitter, 0.25f, 1e-4);
+    CHECK(!q.colorDynamics.perTip);
+    CHECK_EQ(q.scatterCount, 4);
+    CHECK(q.wetEdges);
+    CHECK_NEAR(q.noise, 0.5f, 1e-4);
+    CHECK_EQ(q.extraParams.size(), usize{1});
+}
+
+MARI_TEST(brush_save_export_remove_persist_in_user_dir) {
+    std::unique_ptr<AgentSession> s = sessionWith(mari_ctx, 64, 64);
+    CHECK(s != nullptr);
+    if (s == nullptr) return;
+    const usize before = s->brushes().size();
+
+    // 현재(내장) 브러시를 다른 이름으로 저장 → 사용자 브러시가 하나 는다.
+    Json save = req("brush.save");
+    save.set("name", Json::string("내 붓"));
+    const Json saved = s->execute(save);
+    CHECK(saved["ok"].asBool());
+    CHECK_EQ(s->brushes().size(), before + 1);
+
+    // export → 지름을 고쳐 → save(preset) → 같은 이름이라 덮어쓴다(개수 그대로).
+    Json ex = req("brush.export");
+    ex.set("brush", Json::string("내 붓"));
+    const Json exported = s->execute(ex);
+    CHECK(exported["ok"].asBool());
+    Json preset = exported["result"]["preset"];
+    Json tip = preset["tip"];
+    tip.set("diameter", Json::number(77.0));
+    preset.set("tip", std::move(tip));
+    Json save2 = req("brush.save");
+    save2.set("preset", std::move(preset));
+    CHECK(s->execute(save2)["ok"].asBool());
+    CHECK_EQ(s->brushes().size(), before + 1);
+
+    // 새 세션이 같은 폴더를 읽는다 → 77px 로 보인다.
+    std::unique_ptr<AgentSession> t = sessionWith(mari_ctx, 64, 64);
+    CHECK(t != nullptr);
+    if (t == nullptr) return;
+    Json d = req("brush.describe");
+    d.set("brush", Json::string("내 붓"));
+    const Json desc = t->execute(d);
+    CHECK(desc["ok"].asBool());
+    CHECK_NEAR(desc["result"]["tip"]["diameter"].asNumber(), 77.0, 1e-6);
+
+    // 지우면 파일도 사라져 다음 세션엔 없다. 내장은 못 지운다.
+    Json rm = req("brush.remove");
+    rm.set("brush", Json::string("내 붓"));
+    CHECK(t->execute(rm)["ok"].asBool());
+    std::unique_ptr<AgentSession> u = sessionWith(mari_ctx, 64, 64);
+    CHECK(u != nullptr && u->brushes().size() == before);
+    Json rmBuiltin = req("brush.remove");
+    rmBuiltin.set("brush", Json::integer(static_cast<i64>(u->brushes().front().id)));
+    CHECK(!u->execute(rmBuiltin)["ok"].asBool());
 }
 
 MARI_TEST_MAIN()

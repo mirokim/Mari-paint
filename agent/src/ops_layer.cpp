@@ -1,5 +1,6 @@
 // Mari Paint — 레이어·선택·브러시 연산. 표는 capabilities.cpp 에 있다.
 #include <mari/agent/session.hpp>
+#include <mari/agent/brush_library.hpp>
 #include <mari/app/layer_commands.hpp>
 
 #include <mari/app/document.hpp>
@@ -786,8 +787,19 @@ Result<Json> brushImport(AgentSession& s, const Json& req) {
     for (const auto& n : imported.value().report.notes) {
         notes.push_back(n.message);
     }
+    const bool persist = req["persist"].asBool(true);
+    Json saved = Json::array();
     Json arr = Json::array();
     for (auto& p : imported.value().presets) {
+        if (persist) {
+            const std::string file = presetFilePath(s.brushDir(), p.name);
+            const Result<void> w = savePresetFile(file, p);
+            if (!w.ok()) {
+                notes.push_back("저장 실패: " + w.message());
+            } else {
+                saved.push(Json::string(file));
+            }
+        }
         const BrushId id = s.addBrush(std::move(p), src, notes);
         for (const BrushEntry& b : s.brushes()) {
             if (b.id == id) {
@@ -803,6 +815,98 @@ Result<Json> brushImport(AgentSession& s, const Json& req) {
     out.set("imported", std::move(arr));
     out.set("format", Json::string(src));
     out.set("notes", std::move(noteArr));
+    out.set("saved", std::move(saved));
+    return Ok(std::move(out));
+}
+
+/// 브러시를 .mbp 로 저장한다. `preset` 을 주면 그 내용(수정본)을, 없으면 등록된 프리셋을 그대로.
+Result<Json> brushSave(AgentSession& s, const Json& req) {
+    brush::MariBrushPreset p;
+    BrushId id = kInvalidBrushId;
+    if (req["preset"].isObject()) {
+        Result<brush::MariBrushPreset> parsed = presetFromJson(req["preset"]);
+        if (!parsed.ok()) {
+            return parsed.error();
+        }
+        p = std::move(parsed).value();
+    } else {
+        const Result<const BrushEntry*> b = s.resolveBrush(req["brush"]);
+        if (!b.ok()) {
+            return b.error();
+        }
+        p = b.value()->preset;
+        id = b.value()->id;
+    }
+    if (req["name"].isString() && !req["name"].asString().empty()) {
+        p.name = req["name"].asString();
+    }
+    if (p.name.empty()) {
+        return Err("이름이 없다", ErrorCode::InvalidArgument);
+    }
+    if (p.sourceFormat.empty() || p.sourceFormat == "builtin") {
+        p.sourceFormat = "native";
+    }
+    // 같은 이름의 사용자 브러시가 있으면 덮어쓴다(파일도 하나로).
+    const Result<void> rm = removePresetFile(s.brushDir(), p.name);
+    if (!rm.ok()) {
+        return rm.error();
+    }
+    const std::string file = presetFilePath(s.brushDir(), p.name);
+    const Result<void> w = savePresetFile(file, p);
+    if (!w.ok()) {
+        return w.error();
+    }
+    // 등록 목록도 맞춘다: 같은 id(또는 같은 이름의 사용자 브러시)를 고쳤으면 갱신, 아니면 새로 등록.
+    bool updated = false;
+    for (const BrushEntry& b : s.brushes()) {
+        if (b.source == "builtin") continue;
+        if (b.id == id || b.preset.name == p.name) {
+            id = b.id;
+            (void)s.updateBrush(id, p);
+            updated = true;
+            break;
+        }
+    }
+    if (!updated) {
+        id = s.addBrush(p, p.sourceFormat, {});
+    }
+    Json out = Json::object();
+    out.set("id", Json::integer(id));
+    out.set("name", Json::string(p.name));
+    out.set("path", Json::string(file));
+    return Ok(std::move(out));
+}
+
+/// 사용자 브러시를 지운다(파일도).
+Result<Json> brushRemove(AgentSession& s, const Json& req) {
+    const Result<const BrushEntry*> b = s.resolveBrush(req["brush"]);
+    if (!b.ok()) {
+        return b.error();
+    }
+    const BrushId id = b.value()->id;
+    const std::string name = b.value()->preset.name;
+    const Result<void> r = s.removeBrush(id);
+    if (!r.ok()) {
+        return r.error();
+    }
+    const Result<void> rm = removePresetFile(s.brushDir(), name);
+    if (!rm.ok()) {
+        return rm.error();
+    }
+    Json out = Json::object();
+    out.set("removed", Json::integer(id));
+    return Ok(std::move(out));
+}
+
+/// 브러시의 전체 프리셋을 JSON(.mbp 와 같은 형식)으로 준다 — 에이전트가 고쳐서 brush.save 로 돌려줄 수 있다.
+Result<Json> brushExport(AgentSession& s, const Json& req) {
+    const Result<const BrushEntry*> b = s.resolveBrush(req["brush"]);
+    if (!b.ok()) {
+        return b.error();
+    }
+    Json out = Json::object();
+    out.set("id", Json::integer(b.value()->id));
+    out.set("preset", presetToJson(b.value()->preset));
     return Ok(std::move(out));
 }
 

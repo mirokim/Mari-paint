@@ -21,6 +21,7 @@ set(MARI_AGENT_SOURCES
     src/ops_layer.cpp
     src/ops_draw.cpp
     src/ops_view.cpp
+    src/brush_library.cpp
 )
 
 add_library(mari_agent STATIC ${MARI_AGENT_SOURCES})
