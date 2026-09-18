@@ -380,7 +380,7 @@ HRESULT MariLayerImpl::ExportPixels(LONG* pWidth, LONG* pHeight, SAFEARRAY** pDa
     if (!r.ok()) {
         return hresultFromError(IID_IMariLayer, r.error());
     }
-    if (area.w <= 0 || area.h <= 0) {
+    if (area.width <= 0 || area.height <= 0) {
         // 빈 레이어. 0×0 빈 배열을 정직하게 돌려준다(에러가 아니다).
         *pData = safeArrayFromBytes(nullptr, 0);
         return *pData != nullptr ? S_OK : E_OUTOFMEMORY;
@@ -395,8 +395,8 @@ HRESULT MariLayerImpl::ExportPixels(LONG* pWidth, LONG* pHeight, SAFEARRAY** pDa
                             E_INVALIDARG);
     }
 
-    *pWidth = static_cast<LONG>(area.w);
-    *pHeight = static_cast<LONG>(area.h);
+    *pWidth = static_cast<LONG>(area.width);
+    *pHeight = static_cast<LONG>(area.height);
     *pData = safeArrayFromBytes(buf.data(), buf.size());
     return *pData != nullptr ? S_OK : E_OUTOFMEMORY;
 }
@@ -469,7 +469,7 @@ public:
             return CO_E_OBJNOTCONNECTED;
         }
         const Size s = doc_->canvasSize();
-        doc_->setSelection(Rect{0, 0, s.w, s.h});
+        doc_->setSelection(Rect{0, 0, s.width, s.height});
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE Deselect() override {
@@ -521,11 +521,11 @@ public:
     }
     HRESULT STDMETHODCALLTYPE get_Width(LONG* pVal) override {
         MARI_REQUIRE_DOC();
-        return returnScalar<LONG>(pVal, static_cast<LONG>(doc_->canvasSize().w));
+        return returnScalar<LONG>(pVal, static_cast<LONG>(doc_->canvasSize().width));
     }
     HRESULT STDMETHODCALLTYPE get_Height(LONG* pVal) override {
         MARI_REQUIRE_DOC();
-        return returnScalar<LONG>(pVal, static_cast<LONG>(doc_->canvasSize().h));
+        return returnScalar<LONG>(pVal, static_cast<LONG>(doc_->canvasSize().height));
     }
     HRESULT STDMETHODCALLTYPE get_FullName(BSTR* pVal) override {
         MARI_REQUIRE_DOC();
@@ -648,8 +648,8 @@ public:
             return hresultFromError(IID_IMariDocument, r.error());
         }
         const Size s = doc_->canvasSize();
-        *pWidth = static_cast<LONG>(s.w);
-        *pHeight = static_cast<LONG>(s.h);
+        *pWidth = static_cast<LONG>(s.width);
+        *pHeight = static_cast<LONG>(s.height);
         *pData = safeArrayFromBytes(buf.data(), buf.size());
         return *pData != nullptr ? S_OK : E_OUTOFMEMORY;
     }
@@ -1043,8 +1043,11 @@ HRESULT createMariApplication(REFIID riid, void** ppv) {
     if (obj == nullptr) {
         return E_OUTOFMEMORY;
     }
-    const HRESULT hr = obj->QueryInterface(riid, ppv);
-    obj->Release();
+    // DualBase 와 ConnectionPointContainer 양쪽에 IUnknown 이 있어 모호하다.
+    // 정본은 owner() 가 말하는 대로 DualBase 쪽이다.
+    IUnknown* unk = static_cast<IMariApplication*>(obj);
+    const HRESULT hr = unk->QueryInterface(riid, ppv);
+    unk->Release();
     return hr;
 }
 

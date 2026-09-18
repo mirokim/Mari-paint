@@ -3,7 +3,7 @@
 //   "4096² 캔버스 스냅샷 100개 < 50MB, 각 < 1ms"
 //
 // **실제로 재서 출력한다.** 숫자를 눈으로 볼 수 없으면 "O(1) 이다"는 주장일 뿐이다.
-// 메모리는 /proc/self/statm 의 RSS 로, 시간은 steady_clock 으로 잰다.
+// 메모리는 RSS(mari/test/sys.hpp) 로, 시간은 steady_clock 으로 잰다.
 //
 // 이게 통과한다는 것의 의미(docs/05 2.2):
 //   AI 의 작업 방식 자체가 **시도 → 평가 → 되돌리기**다. 그게 싸지 않으면
@@ -12,6 +12,7 @@
 #include <mari/agent/snapshot.hpp>
 #include <mari/crypto/canvas_hash.hpp>
 #include <mari/test/harness.hpp>
+#include <mari/test/sys.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -33,18 +34,7 @@ Json req(const char* op) {
 
 /// 현재 RSS(바이트). 못 읽으면 0.
 usize rssBytes() {
-    std::FILE* f = std::fopen("/proc/self/statm", "r");
-    if (f == nullptr) {
-        return 0;
-    }
-    unsigned long long total = 0;
-    unsigned long long resident = 0;
-    const int n = std::fscanf(f, "%llu %llu", &total, &resident);
-    std::fclose(f);
-    if (n != 2) {
-        return 0;
-    }
-    return static_cast<usize>(resident) * 4096u; // 리눅스 x86-64 페이지 크기
+    return static_cast<usize>(mari::test::rssBytes());
 }
 
 f64 nowMs() {

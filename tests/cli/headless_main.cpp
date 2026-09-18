@@ -35,6 +35,7 @@
 #include <mari/agent/session.hpp>
 #include <mari/mcp/tools.hpp>
 #include <mari/test/harness.hpp>
+#include <mari/test/sys.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -56,15 +57,10 @@ using mari::agent::Json;
 
 namespace {
 
-struct Run {
-    int exitCode = -1;
-    std::string out;
-    std::string err;
-};
+using Run = mari::test::ProcessResult;
 
 std::string slurp(const std::filesystem::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return mari::test::slurpFile(p);
 }
 
 std::filesystem::path workDir(const char* tag) {
@@ -79,22 +75,10 @@ std::filesystem::path workDir(const char* tag) {
 }
 
 /// 바이너리를 돌린다. `envPrefix` 에 `env -u DISPLAY` 같은 것을 끼워 넣을 수 있다.
+/// (POSIX 전용. Windows 에는 DISPLAY 가 없어 무시된다 — mari/test/sys.hpp 참조.)
 Run run(const std::filesystem::path& dir, const std::string& args,
         const std::string& envPrefix = std::string{}, const std::string& stdinFile = std::string{}) {
-    const std::filesystem::path outPath = dir / "stdout.txt";
-    const std::filesystem::path errPath = dir / "stderr.txt";
-    std::string cmd = "cd " + dir.string() + " && " + envPrefix + "\"" + MARI_PAINT_BIN + "\" " +
-                      args;
-    if (!stdinFile.empty()) {
-        cmd += " < " + stdinFile;
-    }
-    cmd += " > " + outPath.string() + " 2> " + errPath.string();
-    Run r;
-    const int rc = std::system(cmd.c_str());
-    r.exitCode = (rc == -1) ? -1 : (rc / 256);
-    r.out = slurp(outPath);
-    r.err = slurp(errPath);
-    return r;
+    return mari::test::runProcess(MARI_PAINT_BIN, dir, args, envPrefix, stdinFile);
 }
 
 void writeText(const std::filesystem::path& p, const std::string& text) {
@@ -154,18 +138,7 @@ void expectSameOps(mari::test::Context& mari_ctx, const std::vector<std::string>
 
 /// 현재 RSS(바이트). 못 읽으면 0.
 usize rssBytes() {
-    std::FILE* f = std::fopen("/proc/self/statm", "r");
-    if (f == nullptr) {
-        return 0;
-    }
-    unsigned long long total = 0;
-    unsigned long long resident = 0;
-    const int n = std::fscanf(f, "%llu %llu", &total, &resident);
-    (void)std::fclose(f);
-    if (n != 2) {
-        return 0;
-    }
-    return static_cast<usize>(resident) * 4096u;
+    return static_cast<usize>(mari::test::rssBytes());
 }
 
 f64 nowMs() {

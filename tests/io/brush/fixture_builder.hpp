@@ -16,9 +16,17 @@
 #include <cstdio>
 #include <cstring>
 #include <csetjmp>
-#include <unistd.h>
 #include <string>
 #include <vector>
+
+// 임시 파일 이름에 PID 를 섞는다. Windows 는 unistd.h 가 없다.
+#if defined(_WIN32)
+#include <process.h>
+#define MARI_TESTFIX_GETPID() ::_getpid()
+#else
+#include <unistd.h>
+#define MARI_TESTFIX_GETPID() ::getpid()
+#endif
 
 namespace mari::testfix {
 
@@ -453,7 +461,7 @@ public:
     explicit TempFile(const std::string& tag) {
         static int counter = 0;
         path_ = "/tmp/mari_brush_fixture_" + tag + "_" + std::to_string(++counter) + "_" +
-                std::to_string(static_cast<long>(::getpid())) + ".bin";
+                std::to_string(static_cast<long>(MARI_TESTFIX_GETPID())) + ".bin";
         std::remove(path_.c_str());
     }
     ~TempFile() { std::remove(path_.c_str()); }

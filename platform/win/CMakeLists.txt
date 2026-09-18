@@ -120,6 +120,9 @@ file(WRITE "${MARI_TLB_RC}"
 "// 자동 생성. mari.tlb 를 실행파일 리소스로 박는다.\n"
 "1 TYPELIB \"${MARI_MIDL_DIR}/mari.tlb\"\n")
 set(MARI_TLB_RESOURCE "${MARI_TLB_RC}" CACHE INTERNAL "타입 라이브러리 리소스")
+# 🔴 .rc 는 내용이 안 바뀌므로 RC 컴파일러가 tlb 변경을 못 본다. 쓰는 쪽(hosts/)이
+#    OBJECT_DEPENDS 로 이 파일을 걸어야 한다 — 안 걸면 IDL 을 고쳐도 옛 tlb 가 실행파일에 남는다(실측).
+set(MARI_TLB_FILE "${MARI_MIDL_DIR}/mari.tlb" CACHE INTERNAL "타입 라이브러리 파일")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 경고 설정

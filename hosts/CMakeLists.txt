@@ -42,6 +42,8 @@ set(MARI_8BF_HOST_SOURCES
 
 add_executable(mari_8bf_host ${MARI_8BF_HOST_SOURCES} "${MARI_TLB_RESOURCE}")
 add_dependencies(mari_8bf_host mari_midl)
+# tlb 가 바뀌면 리소스를 다시 컴파일한다(platform/win/CMakeLists.txt 의 MARI_TLB_FILE 주석).
+set_source_files_properties("${MARI_TLB_RESOURCE}" PROPERTIES OBJECT_DEPENDS "${MARI_TLB_FILE}")
 set_target_properties(mari_8bf_host PROPERTIES
     OUTPUT_NAME "mari-8bf-host-${MARI_HOST_ARCH}"
     WIN32_EXECUTABLE FALSE)   # 콘솔 서브시스템. /regserver 오류를 stderr 로 보여 준다

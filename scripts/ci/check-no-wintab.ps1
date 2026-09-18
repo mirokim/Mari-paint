@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Mari Paint — WinTab 미사용 검증 (docs/03 3절 · 10절 `wintab_never_loaded`)
 
@@ -68,8 +68,10 @@ function Get-TargetFiles([string] $root) {
     if (-not (Test-Path -LiteralPath $root)) {
         throw "검사할 경로가 없다: $root"
     }
-    Get-ChildItem -LiteralPath $root -Recurse -File -Include *.exe, *.dll |
-        Where-Object { $_.FullName -notmatch '\\CMakeFiles\\' }
+    # -Include 는 -LiteralPath 와 같이 쓰면 걸러지지 않는다(PS 5.1 실측: .tlb 가 통과했다).
+    # 확장자를 직접 본다.
+    Get-ChildItem -LiteralPath $root -Recurse -File |
+        Where-Object { $_.Extension -in '.exe', '.dll' -and $_.FullName -notmatch '\\CMakeFiles\\' }
 }
 
 # ── 1·2. 임포트 테이블 (dumpbin) ─────────────────────────────────────────────
@@ -85,7 +87,7 @@ function Test-ImportTable([System.IO.FileInfo] $file) {
             $hits += $bad
         }
     }
-    return $hits
+    return ,$hits   # 쉼표: 빈 배열이 $null 로 풀리지 않게 한다(PS 5.1 StrictMode)
 }
 
 # ── 3. 바이너리 문자열 검사 ──────────────────────────────────────────────────
@@ -102,7 +104,7 @@ function Test-EmbeddedStrings([System.IO.FileInfo] $file) {
             $hits += $bad
         }
     }
-    return $hits
+    return ,$hits   # 쉼표: 빈 배열이 $null 로 풀리지 않게 한다(PS 5.1 StrictMode)
 }
 
 Write-Host "=== Mari WinTab 미사용 검증 (docs/03 3절) ===" -ForegroundColor Cyan
@@ -117,7 +119,8 @@ foreach ($file in Get-TargetFiles $Path) {
     $all = @()
     if ($null -ne $importHits) { $all += $importHits }
     if ($Strict) { $all += $stringHits }
-    $all = $all | Select-Object -Unique
+    # @( ) 로 감싼다 — PS 5.1 은 빈 파이프라인 결과가 $null 이라 StrictMode 에서 .Count 가 터진다.
+    $all = @($all | Select-Object -Unique)
 
     if ($all.Count -gt 0) {
         $msg = "$($file.Name): 금지된 참조 발견 → $($all -join ', ')"

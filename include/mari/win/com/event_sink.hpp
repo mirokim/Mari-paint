@@ -21,6 +21,11 @@
 #include <mari/core/types.hpp>
 #include <mari/win/com/com_ptr.hpp>
 
+// IConnectionPointContainer · IConnectionPoint · IEnumConnectionPoints 는 ocidl.h,
+// CONNECT_E_* 는 olectl.h 에 있다. objbase.h 만으로는 안 나온다.
+#include <ocidl.h>
+#include <olectl.h>
+
 #include <mutex>
 #include <string>
 #include <vector>

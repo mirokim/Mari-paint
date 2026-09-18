@@ -28,7 +28,10 @@ target_compile_features(mari_common INTERFACE cxx_std_20)
 target_link_libraries(mari_common INTERFACE Threads::Threads)
 
 if(MSVC)
-    target_compile_options(mari_common INTERFACE /W4 /permissive-)
+    # /utf-8: 소스는 BOM 없는 UTF-8 이다. 안 주면 한글 주석·문자열이 코드페이지로 해석된다.
+    target_compile_options(mari_common INTERFACE /W4 /permissive- /utf-8)
+    # 테스트가 RSS 를 GetProcessMemoryInfo 로 잰다(include/mari/test/sys.hpp).
+    target_link_libraries(mari_common INTERFACE psapi)
 else()
     target_compile_options(mari_common INTERFACE
         -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion)
@@ -64,6 +67,8 @@ add_subdirectory(cli)
 # Windows 전용 레이어. 각 파일 안에도 WIN32 가드가 있지만 여기서도 명시적으로 막는다.
 # platform/win 이 hosts 보다 먼저여야 한다(hosts/CMakeLists.txt 가 FATAL_ERROR 로 막는다).
 if(WIN32)
+    # MIDL 이 내는 mari_i.c 는 C, 타입 라이브러리를 박는 .rc 는 RC 다.
+    enable_language(C RC)
     add_subdirectory(platform/win)
     add_subdirectory(hosts)
 endif()

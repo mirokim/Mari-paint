@@ -13,6 +13,12 @@
  *    `IMariEventSink` 는 "저장했다 / 해시는 이거다" 까지만 말한다.
  *
  * 빌드: midl mari.idl /out <bindir> /tlb mari.tlb /h mari.h /iid mari_i.c /proxy mari_p.c
+ *
+ * 🔴 helpstring 등 **문자열 리터럴은 ASCII 만.** 주석은 한글이어도 된다.
+ *    MIDL 의 렉서는 시스템 코드페이지(CP949) 기준 DBCS 로 문자열을 읽어서,
+ *    UTF-8 한글이 들어가면 닫는 따옴표를 삼키고 엉뚱한 줄에서 MIDL2025 를 낸다.
+ *    (실측: 24행 helpstring 이 28행 "expecting ) near stdole2" 로 터졌다.)
+ *    /cpp_opt "/utf-8" 로도 못 고친다 — 전처리기가 아니라 MIDL 자신의 문제다.
  */
 
 import "oaidl.idl";
@@ -21,7 +27,7 @@ import "ocidl.idl";
 [
     uuid(EB223729-5306-4A98-9AE1-F788F465F616),
     version(1.0),
-    helpstring("Mari Paint 1.0 타입 라이브러리")
+    helpstring("Mari Paint 1.0 Type Library")
 ]
 library MariPaintLib
 {
@@ -111,11 +117,11 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring("레이어 하나")
+        helpstring("A single layer")
     ]
     interface IMariLayer : IDispatch
     {
-        [propget, id(1), helpstring("레이어 식별자. 문서 안에서 유일하다")]
+        [propget, id(1), helpstring("Layer id. Unique within the document")]
         HRESULT Id([out, retval] LONG* pVal);
 
         [propget, id(2)] HRESULT Name([out, retval] BSTR* pVal);
@@ -137,30 +143,29 @@ library MariPaintLib
         [propget, id(7)] HRESULT Locked([out, retval] VARIANT_BOOL* pVal);
         [propput, id(7)] HRESULT Locked([in] VARIANT_BOOL newVal);
 
-        [propget, id(8), helpstring("알파 잠금. 그린 자리에만 칠해진다")]
+        [propget, id(8), helpstring("Alpha lock. Paint only lands where pixels already exist")]
         HRESULT AlphaLocked([out, retval] VARIANT_BOOL* pVal);
         [propput, id(8)] HRESULT AlphaLocked([in] VARIANT_BOOL newVal);
 
-        [propget, id(9), helpstring("그려진 내용의 경계. 비어 있으면 전부 0")]
+        [propget, id(9), helpstring("Bounds of painted content. All zero when empty")]
         HRESULT BoundsLeft([out, retval] LONG* pVal);
         [propget, id(10)] HRESULT BoundsTop([out, retval] LONG* pVal);
-        [propget, id(11), helpstring("배타 경계 — core 의 Rect 규약과 같다")]
+        [propget, id(11), helpstring("Exclusive edge, same as the core Rect convention")]
         HRESULT BoundsRight([out, retval] LONG* pVal);
         [propget, id(12)] HRESULT BoundsBottom([out, retval] LONG* pVal);
 
-        [propget, id(13), helpstring("그룹 레이어의 자식들. 래스터면 빈 컬렉션")]
+        [propget, id(13), helpstring("Children of a group layer. Empty collection for raster layers")]
         HRESULT Children([out, retval] IMariLayers** ppVal);
 
-        [id(20), helpstring("이 레이어 픽셀을 RGBA8 로 꺼낸다. 행 스트라이드 = Width*4")]
+        [id(20), helpstring("Export this layer as RGBA8. Row stride = Width*4")]
         HRESULT ExportPixels([out] LONG* pWidth, [out] LONG* pHeight,
                              [out, retval] SAFEARRAY(BYTE)* pData);
 
-        [id(21), helpstring("RGBA8 픽셀을 이 레이어에 써 넣는다. (x,y) 는 캔버스 좌표")]
+        [id(21), helpstring("Write RGBA8 pixels into this layer. (x,y) in canvas coordinates")]
         HRESULT ImportPixels([in] LONG x, [in] LONG y, [in] LONG width, [in] LONG height,
                              [in] SAFEARRAY(BYTE) data);
 
-        [id(22), helpstring("이 레이어 픽셀의 SHA-256 을 소문자 16진 문자열로. "
-                            "🔴 해시를 계산할 뿐 서명하지 않는다 — 서명은 Sigan 의 몫이다")]
+        [id(22), helpstring("SHA-256 of this layer as lowercase hex. Computed only, never signed; signing belongs to Sigan")]
         HRESULT PixelHash([out, retval] BSTR* pVal);
     };
 
@@ -177,11 +182,11 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring("레이어 컬렉션. 인덱스 0 이 가장 아래다")
+        helpstring("Layer collection. Index 0 is the bottom")
     ]
     interface IMariLayers : IDispatch
     {
-        [propget, id(DISPID_VALUE), helpstring("인덱스 0 = 가장 아래")]
+        [propget, id(DISPID_VALUE), helpstring("Index 0 = bottom")]
         HRESULT Item([in] LONG index, [out, retval] IMariLayer** ppVal);
 
         [propget, id(1)] HRESULT Count([out, retval] LONG* pVal);
@@ -189,15 +194,15 @@ library MariPaintLib
         [propget, id(DISPID_NEWENUM), restricted]
         HRESULT _NewEnum([out, retval] IUnknown** ppVal);
 
-        [id(2), helpstring("래스터 레이어를 더한다. index < 0 이면 맨 위")]
+        [id(2), helpstring("Add a raster layer. index < 0 means top")]
         HRESULT AddRaster([in] BSTR name, [in] LONG index, [out, retval] IMariLayer** ppVal);
 
-        [id(3), helpstring("그룹 레이어를 더한다. index < 0 이면 맨 위")]
+        [id(3), helpstring("Add a group layer. index < 0 means top")]
         HRESULT AddGroup([in] BSTR name, [in] LONG index, [out, retval] IMariLayer** ppVal);
 
         [id(4)] HRESULT Remove([in] LONG id);
 
-        [id(5), helpstring("레이어를 옮긴다. parentId 0 이면 루트로")]
+        [id(5), helpstring("Move a layer. parentId 0 means root")]
         HRESULT Move([in] LONG id, [in] LONG parentId, [in] LONG index);
 
         [id(6)] HRESULT FindById([in] LONG id, [out, retval] IMariLayer** ppVal);
@@ -218,7 +223,7 @@ library MariPaintLib
         [propget, id(1)] HRESULT IsEmpty([out, retval] VARIANT_BOOL* pVal);
         [propget, id(2)] HRESULT Left([out, retval] LONG* pVal);
         [propget, id(3)] HRESULT Top([out, retval] LONG* pVal);
-        [propget, id(4), helpstring("배타 경계")] HRESULT Right([out, retval] LONG* pVal);
+        [propget, id(4), helpstring("Exclusive edge")] HRESULT Right([out, retval] LONG* pVal);
         [propget, id(5)] HRESULT Bottom([out, retval] LONG* pVal);
         [id(10)] HRESULT SelectRect([in] LONG x, [in] LONG y, [in] LONG w, [in] LONG h);
         [id(11)] HRESULT SelectAll();
@@ -234,19 +239,19 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring("문서 하나")
+        helpstring("A single document")
     ]
     interface IMariDocument : IDispatch
     {
         [propget, id(1)] HRESULT Layers([out, retval] IMariLayers** ppVal);
         [propget, id(2)] HRESULT Width([out, retval] LONG* pVal);
         [propget, id(3)] HRESULT Height([out, retval] LONG* pVal);
-        [propget, id(4), helpstring("저장된 적 없으면 빈 문자열")]
+        [propget, id(4), helpstring("Empty string if never saved")]
         HRESULT FullName([out, retval] BSTR* pVal);
         [propget, id(5)] HRESULT Saved([out, retval] VARIANT_BOOL* pVal);
         [propget, id(6)] HRESULT Selection([out, retval] IMariSelection** ppVal);
 
-        [propget, id(7), helpstring("활성 레이어")]
+        [propget, id(7), helpstring("Active layer")]
         HRESULT ActiveLayer([out, retval] IMariLayer** ppVal);
         [propputref, id(7)] HRESULT ActiveLayer([in] IMariLayer* newVal);
 
@@ -254,7 +259,7 @@ library MariPaintLib
          * (docs/03 7절). 줌·회전만으로는 부족해서 행렬 6개를 통째로 낸다. */
         [propget, id(8)] HRESULT ViewZoom([out, retval] DOUBLE* pVal);
         [propget, id(9)] HRESULT ViewRotation([out, retval] DOUBLE* pVal);
-        [id(10), helpstring("캔버스→화면 아핀 행렬 [a b tx c d ty]")]
+        [id(10), helpstring("Canvas-to-screen affine matrix [a b tx c d ty]")]
         HRESULT GetViewMatrix([out, retval] SAFEARRAY(DOUBLE)* pVal);
 
         [id(20)] HRESULT Save();
@@ -262,28 +267,25 @@ library MariPaintLib
         HRESULT SaveAs([in] BSTR path, [in] BSTR format);
         [id(22)] HRESULT Close([in] VARIANT_BOOL saveChanges);
 
-        [id(23), helpstring("합성 결과를 RGBA8 로 꺼낸다")]
+        [id(23), helpstring("Export the composited result as RGBA8")]
         HRESULT ExportPixels([out] LONG* pWidth, [out] LONG* pHeight,
                              [out, retval] SAFEARRAY(BYTE)* pData);
 
-        [id(24), helpstring("RGBA8 픽셀을 새 레이어로 들여온다. "
-                            "🔴 이 경로로 들어온 픽셀은 OnPaste(mariPasteScript) 로 보고된다 — "
-                            "붓으로 그리지 않은 픽셀을 그린 것처럼 위장하지 않는다")]
+        [id(24), helpstring("Import RGBA8 pixels as a new layer. Reported via OnPaste(mariPasteScript): pixels not painted by brush are never disguised as painted")]
         HRESULT ImportPixels([in] BSTR layerName, [in] SAFEARRAY(BYTE) data,
                              [in] LONG width, [in] LONG height,
                              [out, retval] IMariLayer** ppVal);
 
-        [id(25), helpstring("합성 결과의 SHA-256. 🔴 계산만 한다. 봉인·서명은 Sigan 의 몫이다")]
+        [id(25), helpstring("SHA-256 of the composited result. Computed only; sealing and signing belong to Sigan")]
         HRESULT CanvasHash([out, retval] BSTR* pVal);
 
-        [id(26), helpstring("지금 화면을 증거로 남긴다 → OnCanvasSnapshot 이 발생한다")]
+        [id(26), helpstring("Record the current canvas as evidence; raises OnCanvasSnapshot")]
         HRESULT TakeCanvasSnapshot([out, retval] BSTR* pHash);
 
         [id(30)] HRESULT Undo();
         [id(31)] HRESULT Redo();
 
-        [id(40), helpstring(".8bf 필터를 건다. 격리 호스트에서 돈다(docs/02 6.2). "
-                            "timeoutMs <= 0 이면 기본 30초")]
+        [id(40), helpstring("Apply a .8bf filter in the isolated host (docs/02 6.2). timeoutMs <= 0 means 30 s default")]
         HRESULT Apply8bf([in] BSTR pluginPath, [in] BSTR filterName, [in] LONG timeoutMs,
                          [out, retval] MariHostStatus* pStatus);
     };
@@ -329,36 +331,33 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring("Mari 이벤트 싱크. Sigan 이 구현한다")
+        helpstring("Mari event sink. Implemented by Sigan")
     ]
     interface IMariEventSink : IDispatch
     {
-        [id(1), helpstring("문서를 열었다. hash 는 연 파일의 SHA-256")]
+        [id(1), helpstring("A document was opened. hash is the SHA-256 of the opened file")]
         HRESULT OnDocumentOpened([in] BSTR path, [in] BSTR hash,
                                  [in] LONG width, [in] LONG height);
 
-        [id(2), helpstring("문서를 저장했다. 🔴 Sigan 의 Outputs 를 자동으로 채운다(docs/03 S2). "
-                           "sizeBytes 는 저장된 파일 크기")]
+        [id(2), helpstring("A document was saved. Fills Sigan Outputs automatically (docs/03 S2). sizeBytes is the saved file size")]
         HRESULT OnDocumentSaved([in] BSTR path, [in] BSTR hash, [in] hyper sizeBytes);
 
-        [id(3), helpstring("캔버스 픽셀 스냅샷을 찍었다. 🔴 docs/03 S3 — "
-                           "StartCanvasHash/EndCanvasHash 가 v0 null 을 벗어나는 지점")]
+        [id(3), helpstring("A canvas pixel snapshot was taken. docs/03 S3: where StartCanvasHash/EndCanvasHash leave v0 null")]
         HRESULT OnCanvasSnapshot([in] BSTR hash);
 
-        [id(4), helpstring("뷰가 바뀌었다(줌·회전). 🔴 두 증인 대조용(docs/03 7절)")]
+        [id(4), helpstring("View changed (zoom/rotation). Used for two-witness reconciliation (docs/03 sec 7)")]
         HRESULT OnViewChanged([in] DOUBLE zoom, [in] DOUBLE rotation);
 
-        [id(5), helpstring("픽셀을 붙여 넣었다. 🔴 '붓으로 그리지 않은 픽셀'을 정직하게 드러낸다")]
+        [id(5), helpstring("Pixels were pasted. Honestly exposes pixels not painted by brush")]
         HRESULT OnPaste([in] MariPasteSource source);
 
-        [id(6), helpstring("실행취소·다시실행이 일어났다. steps 는 양수면 undo, 음수면 redo")]
+        [id(6), helpstring("Undo/redo happened. steps > 0 is undo, < 0 is redo")]
         HRESULT OnUndo([in] LONG steps);
 
-        [id(7), helpstring("레이어가 바뀌었다(추가·삭제·이동·속성 변경)")]
+        [id(7), helpstring("A layer changed (added, removed, moved, or property change)")]
         HRESULT OnLayerChanged([in] LONG layerId, [in] BSTR changeKind);
 
-        [id(8), helpstring("획 하나가 끝났다. seq 는 파이프 프레임의 시퀀스와 같다 — "
-                           "🔴 이걸로 COM 이벤트와 파이프 스트로크를 이어 붙인다(docs/03 4.1)")]
+        [id(8), helpstring("A stroke completed. seq matches the pipe frame sequence; this joins COM events to pipe strokes (docs/03 4.1)")]
         HRESULT OnStrokeCompleted([in] LONG layerId, [in] hyper firstSeq, [in] hyper lastSeq,
                                   [in] LONG pointCount);
     };
@@ -372,13 +371,13 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring("Mari Paint 애플리케이션")
+        helpstring("Mari Paint application")
     ]
     interface IMariApplication : IDispatch
     {
         [propget, id(1)] HRESULT Documents([out, retval] IMariDocuments** ppVal);
         [propget, id(2)] HRESULT ActiveDocument([out, retval] IMariDocument** ppVal);
-        [propget, id(3), helpstring("\"mari-paint/0.1.0\" 형식")]
+        [propget, id(3), helpstring("Format: \"mari-paint/0.1.0\"")]
         HRESULT Version([out, retval] BSTR* pVal);
         [propget, id(4)] HRESULT Visible([out, retval] VARIANT_BOOL* pVal);
         [propput, id(4)] HRESULT Visible([in] VARIANT_BOOL newVal);
@@ -390,21 +389,21 @@ library MariPaintLib
 
         /* 이벤트 싱크 연결. IConnectionPointContainer 로도 붙을 수 있지만,
          * 스크립트 언어에서는 이쪽이 훨씬 쉽다. 둘 다 지원한다. */
-        [id(20), helpstring("이벤트 싱크를 건다. 돌려받은 쿠키로 나중에 뗀다")]
+        [id(20), helpstring("Attach an event sink. Detach later with the returned cookie")]
         HRESULT AdviseEvents([in] IMariEventSink* sink, [out, retval] LONG* pCookie);
         [id(21)] HRESULT UnadviseEvents([in] LONG cookie);
 
         /* 🔴 Sigan 연동 상태. docs/03 5.1 — 설정 토글은 두지 않는다. **상태 표시만 한다.** */
-        [propget, id(30), helpstring("sigan-native 파이프에 붙어 있나")]
+        [propget, id(30), helpstring("Whether the sigan-native pipe is connected")]
         HRESULT SiganConnected([out, retval] VARIANT_BOOL* pVal);
-        [propget, id(31), helpstring("아직 싱크가 못 받아 저널에만 있는 프레임 수. "
-                                     "🔴 드롭이 아니라 스풀이다(docs/03 4.2)")]
+        [propget, id(31), helpstring("Frames still in the journal, not yet received by the sink. Spooled, not dropped (docs/03 4.2)")]
         HRESULT SiganSpooledFrames([out, retval] hyper* pVal);
-        [propget, id(32), helpstring("이번 세션에서 마지막으로 배정된 seq")]
+        [propget, id(32), helpstring("Last seq assigned in this session")]
         HRESULT SiganLastSeq([out, retval] hyper* pVal);
 
-        [propget, id(40), helpstring("🔴 항상 \"windows-ink\" 다. WinTab 은 구현하지 않는다"
-                                     "(docs/03 3절). 이 값이 다른 것을 반환하면 설계 위반이다")]
+        /* 🔴 이 helpstring 에 'wintab' 이라는 단어를 쓰지 마라. tlb 에 문자열로 박히고
+         *    그 tlb 가 실행파일 리소스로 들어가서 check-no-wintab.ps1 이 잡는다. */
+        [propget, id(40), helpstring("Always \"windows-ink\". No legacy tablet driver API is linked or loaded (docs/03 sec 3). Any other value is a design violation")]
         HRESULT PenInputApi([out, retval] BSTR* pVal);
     };
 
@@ -421,35 +420,32 @@ library MariPaintLib
         dual,
         nonextensible,
         pointer_default(unique),
-        helpstring(".8bf 격리 호스트")
+        helpstring(".8bf isolated host")
     ]
     interface IMari8bfHost : IDispatch
     {
-        [propget, id(1), helpstring("호스트가 64비트인가. 플러그인 아키텍처와 맞아야 한다")]
+        [propget, id(1), helpstring("Whether the host is 64-bit. Must match the plugin architecture")]
         HRESULT Is64Bit([out, retval] VARIANT_BOOL* pVal);
 
-        [id(2), helpstring("플러그인을 훑어 메뉴 항목 목록을 낸다(PIPL). "
-                           "🔴 번역 못 한 프로퍼티는 pNotes 에 남는다 — 조용히 버리지 않는다")]
+        [id(2), helpstring("Scan a plugin and list its menu entries (PIPL). Untranslated properties go to pNotes, never silently dropped")]
         HRESULT Enumerate([in] BSTR pluginPath,
                           [out] SAFEARRAY(BSTR)* pNotes,
                           [out, retval] SAFEARRAY(BSTR)* pFilterNames);
 
-        [id(3), helpstring("필터를 건다. shmName 은 픽셀이 들어 있는 파일 매핑 이름. "
-                           "🔴 픽셀은 COM 을 타지 않는다(docs/02 6.2)")]
+        [id(3), helpstring("Apply a filter. shmName is the file mapping holding the pixels; pixels never travel over COM (docs/02 6.2)")]
         HRESULT Apply([in] BSTR pluginPath, [in] BSTR filterName,
                       [in] BSTR shmName, [in] hyper shmSize,
                       [in] LONG timeoutMs,
                       [out] SAFEARRAY(BSTR)* pNotes,
                       [out, retval] MariHostStatus* pStatus);
 
-        [id(4), helpstring("진행 중인 Apply 를 취소한다. 다른 스레드에서 불러도 된다")]
+        [id(4), helpstring("Cancel the Apply in progress. Safe to call from another thread")]
         HRESULT Cancel();
 
         [propget, id(5), helpstring("0..100")]
         HRESULT Progress([out, retval] LONG* pVal);
 
-        [id(6), helpstring("호스트가 살아 있나. 본체가 주기적으로 찔러 본다 — "
-                           "죽었으면 RPC_E_* 가 돌아오고 본체는 그것만 보고 산다")]
+        [id(6), helpstring("Liveness probe. The main process pings periodically; a dead host returns RPC_E_* and that is all the main process relies on")]
         HRESULT Ping();
     };
 
@@ -458,7 +454,7 @@ library MariPaintLib
      * ──────────────────────────────────────────────────────────────────── */
     [
         uuid(B2DC6851-7CDE-4626-981F-398F0DA41EE8),
-        helpstring("Mari Paint 애플리케이션 (LocalServer32)")
+        helpstring("Mari Paint application (LocalServer32)")
     ]
     coclass MariApplication
     {
@@ -468,7 +464,7 @@ library MariPaintLib
 
     [
         uuid(2F832365-E1A7-4D99-A5BE-652C5932446B),
-        helpstring("Mari .8bf 격리 호스트 (LocalServer32)")
+        helpstring("Mari .8bf isolated host (LocalServer32)")
     ]
     coclass Mari8bfHost
     {

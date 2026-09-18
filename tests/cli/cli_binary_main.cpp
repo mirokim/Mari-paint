@@ -10,6 +10,7 @@
 #include <mari/agent/json.hpp>
 #include <mari/ora/ora.hpp>
 #include <mari/test/harness.hpp>
+#include <mari/test/sys.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,31 +27,17 @@ using mari::agent::Json;
 
 namespace {
 
-struct Run {
-    int exitCode = -1;
-    std::string out;
-    std::string err;
-};
+using Run = mari::test::ProcessResult;
 
 std::string slurp(const std::filesystem::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return mari::test::slurpFile(p);
 }
 
 /// 작업 디렉터리 하나를 잡고 그 안에서 바이너리를 돌린다.
 /// stdout/stderr 를 따로 파일로 받아 **섞이지 않은 상태**로 본다 — 그게 이 테스트의 핵심이다.
+/// (OS 별 차이는 mari/test/sys.hpp 가 흡수한다.)
 Run run(const std::filesystem::path& dir, const std::string& args) {
-    const std::filesystem::path outPath = dir / "stdout.txt";
-    const std::filesystem::path errPath = dir / "stderr.txt";
-    const std::string cmd = "cd " + dir.string() + " && \"" + MARI_PAINT_BIN + "\" " + args +
-                            " > " + outPath.string() + " 2> " + errPath.string();
-    Run r;
-    const int rc = std::system(cmd.c_str());
-    // WEXITSTATUS 를 쓰지 않는 이유: 이식성. 셸이 128+signal 로 돌려주면 그대로 드러난다.
-    r.exitCode = (rc == -1) ? -1 : (rc / 256);
-    r.out = slurp(outPath);
-    r.err = slurp(errPath);
-    return r;
+    return mari::test::runProcess(MARI_PAINT_BIN, dir, args);
 }
 
 std::filesystem::path workDir(const char* tag) {
