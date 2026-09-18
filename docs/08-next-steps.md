@@ -11,7 +11,7 @@
 ## 0. 2026-09-18 현재 상태 (Windows 11 · MSVC 19.44 · Qt 6.9.3)
 
 ```
-빌드: MSVC 19.44 + Ninja + vcpkg   경고 0 · 오류 0   (scriptsuild-win.cmd all)
+빌드: MSVC 19.44 + Ninja + vcpkg   경고 0 · 오류 0   (scripts\build-win.cmd all)
 테스트: ctest 55/55 통과 (Windows 에서 처음)
 게이트: scripts/ci/check-no-wintab.ps1 통과 — 63개 바이너리
 GUI: ui/ 컴파일·링크 됨. 🔴 실행 미검증 (아래)
@@ -20,7 +20,7 @@ GUI: ui/ 컴파일·링크 됨. 🔴 실행 미검증 (아래)
 | 항목 | 상태 |
 |---|---|
 | `platform/win` · `hosts` 컴파일 | ✅ 처음으로 컴파일·링크된다 (커밋 c684c25) |
-| Qt 설치 (LGPL 모듈만) | ✅ `C:\Qt.9.3\msvc2022_64` — aqtinstall 로 qtbase·qtsvg 만. 계정 불필요 |
+| Qt 설치 (LGPL 모듈만) | ✅ `C:\Qt\6.9.3\msvc2022_64` — aqtinstall 로 qtbase·qtsvg 만. 계정 불필요 |
 | 3.1 캔버스 위젯 | ✅ `ui/canvas_widget.*` — 더티만 합성, 뷰 변환은 위젯 소유 |
 | 3.2 WM_POINTER | ✅ `nativeEvent()` → `platform/win` PointerInput. QTabletEvent 0줄 |
 | 3.3 StrokeEntry 로 흘리기 | ✅ `app::LiveStroke` 가 입구. **새 발행 코드 0줄** |
@@ -33,13 +33,13 @@ GUI: ui/ 컴파일·링크 됨. 🔴 실행 미검증 (아래)
 ### 0.1 빌드하는 법 (Windows)
 
 ```powershell
-scriptsuild-win.cmd all        # configure + build + ctest
-scriptsuild-win.cmd build      # 빌드만
+scripts\build-win.cmd all        # configure + build + ctest
+scripts\build-win.cmd build      # 빌드만
 build\cli\mari-paint.exe         # 인자 없음 = GUI. 인자 있음 = 헤드리스 CLI (같은 바이너리)
 ```
 
-`build-win.cmd` 가 하는 것: vcvars64 → `TMP=C:\Dev	mp` → vcpkg 툴체인 → `CMAKE_PREFIX_PATH=%QT_DIR%`.
-vcpkg 는 `C:\Devcpkg` (zlib · libpng · sqlite3, x64-windows). 다른 곳이면 `set VCPKG_ROOT=`.
+`build-win.cmd` 가 하는 것: vcvars64 → `TMP=C:\Dev\tmp` → vcpkg 툴체인 → `CMAKE_PREFIX_PATH=%QT_DIR%`.
+vcpkg 는 `C:\Dev\vcpkg` (zlib · libpng · sqlite3, x64-windows). 다른 곳이면 `set VCPKG_ROOT=`.
 
 🔴 **Windows 에서 처음 만난 함정** (전부 고쳐 뒀지만 다시 만날 수 있다):
 1. **사용자 프로필 경로에 한글이 있으면 cl.exe 가 D8050(c1.dll 실행 불가)로 죽는다.** vcpkg 가
@@ -95,8 +95,6 @@ app/live_stroke.*       엔진 → 실행취소(증분) → 파이프라인 → 
 
 좌표계는 세 개다 — 캔버스 px · 물리 클라이언트 px(WM_POINTER, ViewTransform) · Qt 논리 px.
 물리↔논리 변환(`devicePixelRatio`)은 `CanvasWidget` 안에서만 곱한다. Qt 6 은 Per-Monitor-V2 가 기본이다.
-
----
 
 ---
 
