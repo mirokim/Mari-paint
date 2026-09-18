@@ -39,6 +39,8 @@ signals:
     /// 픽셀에 영향을 주는 변경(가시성·불투명도·블렌드·삭제·이동). 캔버스를 다시 그려라.
     void layersChanged();
     void activeLayerChanged(mari::LayerId id);
+    /// 아래와 병합 버튼/메뉴. 실행취소가 붙은 연산은 MainWindow(app::mergeLayerDown)가 한다.
+    void mergeDownRequested();
 
 private:
     void onRowChanged(int row);

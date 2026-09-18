@@ -30,6 +30,7 @@ public:
     void resetDefaults();
     /// 획이 끝났을 때 부른다 — 최근 색 목록에 넣는다.
     void noteUsed(const QColor& c);
+    [[nodiscard]] const std::vector<QColor>& recentColors() const { return recent_; }
 
 signals:
     void foregroundChanged(const QColor& c);

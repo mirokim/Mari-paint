@@ -32,6 +32,8 @@ namespace mari::ui {
 class CanvasWidget;
 class ColorPanel;
 class LayerPanel;
+class Navigator;
+class PopupPalette;
 enum class Tool;
 
 class MainWindow final : public QMainWindow {
@@ -66,6 +68,10 @@ private:
     void stepBrushSize(int direction);
     void stepOpacity(int direction);
     void togglePanels();
+    void toggleCanvasOnly();
+    void showTabletDialog();
+    void showPalette(const QPoint& globalPos);
+    void mergeDown();
     void refreshStatus();
     void refreshTitle();
 
@@ -76,6 +82,11 @@ private:
     LayerPanel* layerPanel_ = nullptr;
     QDockWidget* colorDock_ = nullptr;
     QDockWidget* layerDock_ = nullptr;
+    QDockWidget* navDock_ = nullptr;
+    Navigator* navigator_ = nullptr;
+    PopupPalette* palette_ = nullptr;
+    bool canvasOnly_ = false;
+    QByteArray savedLayoutState_;
     QToolBar* toolsBar_ = nullptr;
     QToolBar* optionsBar_ = nullptr;
     bool panelsHidden_ = false;

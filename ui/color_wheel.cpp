@@ -122,7 +122,7 @@ void ColorWheel::handle(const QPointF& pt) {
         v_ = std::clamp(1.0 - (pt.y() - sq.top()) / sq.height(), 0.0, 1.0);
     }
     update();
-    emit colorChanged(color());
+    Q_EMIT colorChanged(color());
 }
 
 void ColorWheel::mousePressEvent(QMouseEvent* e) {

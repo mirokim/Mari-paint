@@ -74,7 +74,7 @@ bool LayerRowDelegate::editorEvent(QEvent* e, QAbstractItemModel* m, const QStyl
     if (e->type() == QEvent::MouseButtonRelease) {
         auto* me = static_cast<QMouseEvent*>(e);
         if (me->button() == Qt::LeftButton && eyeRect(o.rect).adjusted(-4, -4, 4, 4).contains(me->pos())) {
-            emit visibilityToggled(i);
+            Q_EMIT visibilityToggled(i);
             return true;
         }
     }

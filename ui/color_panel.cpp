@@ -79,7 +79,7 @@ ColorPanel::ColorPanel(QWidget* parent) : QWidget(parent) {
         if (updating_) return;
         fg_ = c;
         updateFgBgButtons();
-        emit foregroundChanged(fg_);
+        Q_EMIT foregroundChanged(fg_);
     });
 
     auto* row = new QHBoxLayout();
@@ -124,7 +124,7 @@ void ColorPanel::setForeground(const QColor& c) {
     wheel_->setColor(fg_);
     updating_ = false;
     updateFgBgButtons();
-    emit foregroundChanged(fg_);
+    Q_EMIT foregroundChanged(fg_);
 }
 
 void ColorPanel::swap() {

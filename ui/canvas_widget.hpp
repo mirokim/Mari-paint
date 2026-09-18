@@ -35,6 +35,7 @@
 #include <QRegion>
 #include <QWidget>
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -54,6 +55,15 @@ struct LatencyStats {
 
 /// 캔버스 도구. 지우개는 토글이 아니라 도구다(페인팅 앱 관례). 펜 뒤집기는 여전히 우선한다.
 enum class Tool { Brush, Eraser, Eyedropper, Hand };
+
+/// 태블릿 테스터용 마지막 펜 샘플.
+struct PenReadout {
+    bool valid = false;
+    bool pen = false;          ///< PT_PEN 인가(마우스/터치면 false)
+    f32 rawPressure = 0.0f;    ///< 곡선 전 0..1
+    f32 curvedPressure = 0.0f; ///< 곡선 후 0..1
+    f32 tiltX = 0.0f, tiltY = 0.0f, rotation = 0.0f;
+};
 
 class CanvasWidget final : public QWidget,
                            private mari::win::IPointerTarget,
@@ -80,6 +90,15 @@ public:
     void setBrushDiameter(f64 px);
     /// 합성 결과에서 색을 읽는다(스포이드). 캔버스 밖이면 무효 색.
     [[nodiscard]] QColor pickColorAt(const QPointF& logicalPos) const;
+    /// 전역 압력 곡선(LUT 256). 붓 프리셋의 압력 다이내믹 **앞**에 적용된다.
+    void setPressureCurve(const std::array<f32, 256>& lut) { pressureLut_ = lut; hasPressureLut_ = true; }
+    [[nodiscard]] const PenReadout& lastPen() const noexcept { return lastPen_; }
+    /// 합성 결과(premultiplied). 내비게이터·썸네일이 읽는다.
+    [[nodiscard]] const QImage& backingImage() const noexcept { return backing_; }
+    /// 지금 보이는 캔버스 영역(캔버스 px).
+    [[nodiscard]] QRectF visibleCanvasRect() const;
+    /// 캔버스 점을 위젯 중앙에 놓는다(내비게이터).
+    void centerOn(const QPointF& canvasPt);
 
     // ── 뷰 ───────────────────────────────────────────────────────────────
     [[nodiscard]] const mari::win::ViewState& viewState() const noexcept { return view_.state(); }
@@ -107,6 +126,10 @@ signals:
     /// 스포이드로 색을 집었다.
     void colorPicked(const QColor& c);
     void toolChanged(mari::ui::Tool t);
+    /// 우클릭·펜 배럴 — 팝업 팔레트를 띄우라(전역 좌표).
+    void paletteRequested(const QPoint& globalPos);
+    /// Shift+드래그 붓 크기 제스처. 새 지름(캔버스 px).
+    void brushSizeGesture(f64 diameter);
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -132,6 +155,8 @@ private:
     void onPointerCancel(u32 pointerId) override;
 
     void finishStroke(const stroke::RawInputEvent* last);
+    /// 압력 곡선을 적용하고 테스터 리드아웃을 갱신한 이벤트를 돌려준다.
+    [[nodiscard]] stroke::RawInputEvent shapedEvent(const mari::win::PointerSample& s);
     /// 캔버스 더티 → 백킹 합성 예약 + 화면 갱신 요청.
     void scheduleCanvasRepaint(const Rect& canvasRect, u64 inputNs);
     /// 예약된 캔버스 영역을 백킹 이미지에 합성한다. paintEvent 가 부른다.
@@ -185,6 +210,15 @@ private:
     f64 brushDiameter_ = 10.0;
     QPointF hoverPos_{};
     bool hoverVisible_ = false;
+    // Shift+드래그 크기 제스처
+    bool sizeDrag_ = false;
+    QPointF sizeDragStart_{};
+    f64 sizeDragStartDiameter_ = 0.0;
+    bool shiftDown_ = false;
+    // 압력 곡선 · 테스터
+    std::array<f32, 256> pressureLut_{};
+    bool hasPressureLut_ = false;
+    PenReadout lastPen_{};
     u64 strokeSeed_ = 0;
 };
 

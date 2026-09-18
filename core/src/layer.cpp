@@ -5,6 +5,8 @@
 #include <mari/core/layer.hpp>
 #include <mari/core/layer_ops.hpp>
 
+#include <mari/core/blend.hpp>
+
 #include <algorithm>
 #include <unordered_map>
 
@@ -200,6 +202,9 @@ public:
         return -1;
     }
 
+    /// 형제 목록(읽기). mergeDown 이 바로 아래 형제를 찾는 데 쓴다.
+    const std::vector<LayerPtr>& siblingsOfConst(LayerId id) { return siblingsOf(id); }
+
 private:
     static usize clampIndex(int index, usize size) {
         if (index < 0 || static_cast<usize>(index) > size)
@@ -338,6 +343,49 @@ Result<void> reattachLayer(LayerTree& tree, const LayerPtr& layer, LayerId paren
     if (!r.ok())
         return r.error();
     return Ok();
+}
+
+Result<void> mergeDown(LayerTree& tree, LayerId id) {
+    auto* impl = dynamic_cast<LayerTreeImpl*>(&tree);
+    if (impl == nullptr)
+        return Err("이 레이어 트리 구현은 병합을 지원하지 않는다", ErrorCode::Unsupported);
+    const LayerPtr upper = impl->find(id);
+    if (!upper)
+        return Err("그런 레이어가 없다", ErrorCode::NotFound);
+    const int index = impl->indexOf(id);
+    if (index <= 0)
+        return Err("아래에 레이어가 없다", ErrorCode::InvalidArgument);
+    const std::vector<LayerPtr>& siblings = impl->siblingsOfConst(id);
+    const LayerPtr lower = siblings[static_cast<usize>(index - 1)];
+    if (upper->kind() != LayerKind::Raster || lower->kind() != LayerKind::Raster)
+        return Err("래스터 레이어끼리만 병합한다", ErrorCode::Unsupported);
+    if (lower->locked())
+        return Err("아래 레이어가 잠겨 있다", ErrorCode::InvalidArgument);
+    TileMap* dst = lower->tiles();
+    const TileMap* src = upper->tiles();
+    if (dst == nullptr || src == nullptr)
+        return Err("픽셀 저장소가 없다", ErrorCode::InvalidArgument);
+
+    // 위 레이어의 타일을 하나씩 아래 레이어에 블렌드한다(불투명도·블렌드 모드·가시성 반영).
+    // 🔴 화면 합성과 같은 blendRowRgba8 을 쓴다 — 병합 결과가 화면과 다르면 안 된다.
+    if (upper->visible() && upper->opacity() > 0.0f) {
+        DirtyTiles coords;
+        src->collectTiles(src->bounds(), coords);
+        for (const TileCoord& c : coords) {
+            const ConstTilePtr st = src->at(c);
+            if (!st || st->isBlank())
+                continue;
+            Result<TilePtr> dt = dst->writable(c);
+            if (!dt.ok())
+                return dt.error();
+            for (i32 y = 0; y < kTileSize; ++y) {
+                blendRowRgba8(upper->blendMode(), dt.value()->mutablePixels() + static_cast<usize>(y) * dt.value()->stride(),
+                              st->pixels() + static_cast<usize>(y) * st->stride(), kTileSize, upper->opacity(),
+                              nullptr);
+            }
+        }
+    }
+    return impl->remove(id);
 }
 
 } // namespace mari

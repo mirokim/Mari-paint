@@ -33,6 +33,12 @@ set(MARI_UI_SOURCES
     icons.cpp
     icons.hpp
     icons.qrc
+    popup_palette.cpp
+    popup_palette.hpp
+    tablet_dialog.cpp
+    tablet_dialog.hpp
+    navigator.cpp
+    navigator.hpp
     main_window.cpp
     main_window.hpp
     gui.cpp
@@ -44,7 +50,8 @@ target_include_directories(mari_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(mari_ui
     PUBLIC mari::common mari::app mari::record mari::win_input
            Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
-target_compile_definitions(mari_ui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+# QT_NO_EMIT: Qt 의 `emit` 매크로가 mari 헤더의 emit() 메서드와 충돌한다. ui 코드는 Q_EMIT 을 쓴다.
+target_compile_definitions(mari_ui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE QT_NO_EMIT)
 if(MSVC)
     # Qt 헤더는 /W4 에서 시끄럽다. 우리 코드의 경고는 그대로 둔다.
     target_compile_options(mari_ui PRIVATE /external:anglebrackets /external:W0)

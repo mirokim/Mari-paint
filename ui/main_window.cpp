@@ -5,6 +5,11 @@
 #include "color_panel.hpp"
 #include "icons.hpp"
 #include "layer_panel.hpp"
+#include "navigator.hpp"
+#include "popup_palette.hpp"
+#include "tablet_dialog.hpp"
+
+#include <mari/app/layer_commands.hpp>
 
 #include <mari/brush/builtin.hpp>
 #include <mari/win/input/pointer_input.hpp>
@@ -21,6 +26,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -92,6 +98,7 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
         if (app::Document* doc = activeDocument()) {
             layerPanel_->refreshThumbnail(doc->layers().activeLayer());
         }
+        navigator_->refreshImage();
     });
 
     connect(canvas_, &CanvasWidget::strokeFinished, this, [this](const app::LiveStrokeOutcome& o) {
@@ -120,6 +127,8 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     connect(canvas_, &CanvasWidget::latencyUpdated, this, &MainWindow::refreshStatus);
     connect(canvas_, &CanvasWidget::viewChanged, this, &MainWindow::refreshStatus);
     connect(canvas_, &CanvasWidget::colorPicked, this, [this](const QColor& c) { colorPanel_->setForeground(c); });
+    connect(canvas_, &CanvasWidget::paletteRequested, this, &MainWindow::showPalette);
+    connect(canvas_, &CanvasWidget::brushSizeGesture, this, [this](f64 d) { setBrushSize(d); });
     connect(canvas_, &CanvasWidget::toolChanged, this, [this](Tool t) {
         for (QAction* a : toolGroup_->actions()) {
             if (a->data().toInt() == static_cast<int>(t)) a->setChecked(true);
@@ -129,6 +138,13 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
 
     attachDocument(activeDocument());
     resize(1400, 900);
+    {
+        QSettings settings;
+        const QByteArray geo = settings.value("window/geometry").toByteArray();
+        const QByteArray state = settings.value("window/state").toByteArray();
+        if (!geo.isEmpty()) restoreGeometry(geo);
+        if (!state.isEmpty()) restoreState(state);
+    }
     refreshTitle();
     refreshStatus();
 
@@ -180,7 +196,11 @@ void MainWindow::buildMenus() {
 
     QMenu* layer = menuBar()->addMenu("레이어(&L)");
     layer->addAction("새 레이어", QKeySequence(Qt::Key_Insert), this, [this] { layerPanel_->addLayer(); });
-    layer->addAction("레이어 삭제", this, [this] { layerPanel_->removeLayer(); });
+    layer->addAction(themedIcon("copy", 20), "레이어 복제", QKeySequence(Qt::CTRL | Qt::Key_J), this,
+                     [this] { layerPanel_->duplicateLayer(); });
+    layer->addAction(themedIcon("arrow-merge", 20), "아래와 병합", QKeySequence(Qt::CTRL | Qt::Key_E), this,
+                     &MainWindow::mergeDown);
+    layer->addAction(themedIcon("trash", 20), "레이어 삭제", this, [this] { layerPanel_->removeLayer(); });
     layer->addAction("위 레이어 선택", QKeySequence(Qt::Key_PageUp), this, [this] {
         if (app::Document* d = activeDocument()) {
             const auto& roots = d->layers().roots();
@@ -224,6 +244,10 @@ void MainWindow::buildMenus() {
     view->addSeparator();
     viewActions_.panels = view->addAction(themedIcon("layout-sidebar-right-collapse", 20), "패널 숨김/표시",
                                           QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
+    view->addAction("캔버스 전용 모드", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F), this,
+                    &MainWindow::toggleCanvasOnly);
+    view->addSeparator();
+    view->addAction(themedIcon("settings", 20), "태블릿 — 압력 곡선 · 테스터...", this, &MainWindow::showTabletDialog);
     debugStatusAction_ = view->addAction("진단 상태 표시(지연·저널)");
     debugStatusAction_->setCheckable(true);
     debugStatusAction_->setChecked(qEnvironmentVariableIsSet("MARI_GUI_TRACE"));
@@ -359,13 +383,27 @@ void MainWindow::buildDocks() {
     layerPanel_ = new LayerPanel(layerDock_);
     layerDock_->setWidget(layerPanel_);
     addDockWidget(Qt::RightDockWidgetArea, layerDock_);
-    resizeDocks({colorDock_, layerDock_}, {330, 400}, Qt::Vertical);
+    navDock_ = new QDockWidget("내비게이터", this);
+    navDock_->setObjectName("navDock");
+    navDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    navigator_ = new Navigator(canvas_, navDock_);
+    navDock_->setWidget(navigator_);
+    addDockWidget(Qt::RightDockWidgetArea, navDock_);
+    colorDock_->setObjectName("colorDock");
+    layerDock_->setObjectName("layerDock");
+    resizeDocks({navDock_, colorDock_, layerDock_}, {150, 330, 400}, Qt::Vertical);
     resizeDocks({colorDock_}, {280}, Qt::Horizontal);
+
+    palette_ = new PopupPalette(this);
+    connect(palette_, &PopupPalette::brushChosen, this, [this](int i) { brushCombo_->setCurrentIndex(i); });
+    connect(palette_, &PopupPalette::colorChosen, this, [this](const QColor& c) { colorPanel_->setForeground(c); });
 
     connect(layerPanel_, &LayerPanel::layersChanged, this, [this] {
         canvas_->invalidateCanvas();
+        thumbTimer_->start();
         refreshTitle();
     });
+    connect(layerPanel_, &LayerPanel::mergeDownRequested, this, &MainWindow::mergeDown);
     connect(layerPanel_, &LayerPanel::activeLayerChanged, this, [this](LayerId) { refreshStatus(); });
     connect(colorPanel_, &ColorPanel::foregroundChanged, this, [this](const QColor&) { refreshStatus(); });
 }
@@ -393,6 +431,7 @@ app::Document* MainWindow::activeDocument() const {
 void MainWindow::attachDocument(app::Document* doc) {
     canvas_->setDocument(doc);
     layerPanel_->setDocument(doc);
+    if (navigator_ != nullptr) navigator_->refreshImage();
     refreshTitle();
     refreshStatus();
 }
@@ -471,6 +510,11 @@ void MainWindow::closeEvent(QCloseEvent* e) {
         e->ignore();
         return;
     }
+    if (canvasOnly_) toggleCanvasOnly();
+    if (panelsHidden_) togglePanels();
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
     e->accept();
 }
 
@@ -525,6 +569,7 @@ void MainWindow::undo() {
     if (!r.ok()) statusBar()->showMessage(QString::fromStdString(r.message()), 3000);
     canvas_->invalidateCanvas();
     layerPanel_->refresh();
+    thumbTimer_->start();
     refreshTitle();
 }
 
@@ -538,11 +583,57 @@ void MainWindow::redo() {
     refreshTitle();
 }
 
+void MainWindow::toggleCanvasOnly() {
+    canvasOnly_ = !canvasOnly_;
+    if (canvasOnly_) {
+        savedLayoutState_ = saveState();
+        menuBar()->hide();
+        statusBar()->hide();
+        if (!panelsHidden_) togglePanels();
+        showFullScreen();
+    } else {
+        showNormal();
+        menuBar()->show();
+        statusBar()->show();
+        if (panelsHidden_) togglePanels();
+        if (!savedLayoutState_.isEmpty()) restoreState(savedLayoutState_);
+    }
+}
+
+void MainWindow::showTabletDialog() {
+    auto* dlg = new TabletDialog(canvas_, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
+}
+
+void MainWindow::showPalette(const QPoint& globalPos) {
+    palette_->setBrushes(brushes_, brushCombo_->currentIndex());
+    palette_->setRecentColors(colorPanel_->recentColors());
+    palette_->setColor(colorPanel_->foreground());
+    palette_->popupAt(globalPos);
+}
+
+void MainWindow::mergeDown() {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr || canvas_->strokeActive()) return;
+    const Result<LayerId> r = app::mergeLayerDown(*doc, doc->layers().activeLayer());
+    if (!r.ok()) {
+        statusBar()->showMessage(QString::fromStdString(r.message()), 3000);
+        return;
+    }
+    (void)doc->layers().setActiveLayer(r.value());
+    layerPanel_->refresh();
+    canvas_->invalidateCanvas();
+    thumbTimer_->start();
+    refreshTitle();
+}
+
 void MainWindow::togglePanels() {
     panelsHidden_ = !panelsHidden_;
     const bool show = !panelsHidden_;
     colorDock_->setVisible(show);
     layerDock_->setVisible(show);
+    navDock_->setVisible(show);
     toolsBar_->setVisible(show);
     optionsBar_->setVisible(show);
 }

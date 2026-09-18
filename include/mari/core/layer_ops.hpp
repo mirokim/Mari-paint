@@ -16,6 +16,11 @@ namespace mari {
 [[nodiscard]] Result<LayerPtr> duplicateLayer(LayerTree& tree, LayerId id,
                                               std::string newName = std::string{});
 
+/// 레이어를 바로 아래 형제 래스터 레이어에 합치고 자신은 지운다(아래와 병합).
+/// 위 레이어의 불투명도·블렌드 모드·가시성이 반영된다 — 화면 합성과 같은 커널을 쓴다.
+/// 🔴 실행취소는 호출자 몫이다(호출 전에 두 레이어를 스냅샷해 두라).
+[[nodiscard]] Result<void> mergeDown(LayerTree& tree, LayerId id);
+
 /// 래스터 레이어의 픽셀 저장소를 통째로 갈아 끼운다.
 /// 파일 로더(.ora)와 실행취소가 쓴다. 그룹 레이어면 실패한다.
 [[nodiscard]] Result<void> setLayerTiles(Layer& layer, TileMapPtr tiles);

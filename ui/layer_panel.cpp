@@ -4,6 +4,7 @@
 #include "icons.hpp"
 #include "layer_row_delegate.hpp"
 
+#include <mari/app/layer_commands.hpp>
 #include <mari/core/layer_ops.hpp>
 
 #include <QAbstractItemView>
@@ -11,7 +12,9 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
+#include <QAction>
 #include <QListWidget>
+#include <QMenu>
 #include <QPainter>
 #include <QPixmap>
 #include <QSlider>
@@ -107,6 +110,36 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
     list_->setSelectionMode(QAbstractItemView::SingleSelection);
     list_->setUniformItemSizes(true);
     list_->setFrameShape(QFrame::NoFrame);
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(list_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        if (doc_ == nullptr) return;
+        if (QListWidgetItem* item = list_->itemAt(pos)) list_->setCurrentItem(item);
+        const LayerPtr l = activeLayer();
+        if (!l) return;
+        QMenu menu(this);
+        menu.addAction(themedIcon("square-plus", 16), "새 레이어", [this] { addLayer(); });
+        menu.addAction(themedIcon("copy", 16), "복제", [this] { duplicateLayer(); });
+        menu.addAction(themedIcon("arrow-merge", 16), "아래와 병합", [this] { Q_EMIT mergeDownRequested(); });
+        menu.addSeparator();
+        QAction* vis = menu.addAction(l->visible() ? "숨기기" : "보이기");
+        connect(vis, &QAction::triggered, this, [this, l] {
+            l->setVisible(!l->visible());
+            refresh();
+            markDirty();
+        });
+        QAction* lock = menu.addAction(themedIcon("lock", 16), "잠금");
+        lock->setCheckable(true);
+        lock->setChecked(l->locked());
+        connect(lock, &QAction::toggled, this, [this, l](bool on) { l->setLocked(on); refresh(); });
+        QAction* alpha = menu.addAction(themedIcon("square-half", 16), "알파 잠금");
+        alpha->setCheckable(true);
+        alpha->setChecked(l->alphaLocked());
+        connect(alpha, &QAction::toggled, this, [this, l](bool on) { l->setAlphaLocked(on); refresh(); });
+        menu.addSeparator();
+        menu.addAction("이름 바꾸기", [this] { if (QListWidgetItem* it = list_->currentItem()) list_->editItem(it); });
+        menu.addAction(themedIcon("trash", 16), "삭제", [this] { removeLayer(); });
+        menu.exec(list_->viewport()->mapToGlobal(pos));
+    });
     auto* delegate = new LayerRowDelegate(list_);
     list_->setItemDelegate(delegate);
     layout->addWidget(list_, 1);
@@ -134,8 +167,7 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
     };
     btn("square-plus", "새 레이어 (Insert)", [this] { addLayer(); });
     btn("copy", "레이어 복제", [this] { duplicateLayer(); });
-    QToolButton* merge = btn("arrow-merge", "아래와 병합 — 아직 없다(core 에 병합 연산이 없다)", [] {});
-    merge->setEnabled(false);
+    btn("arrow-merge", "아래와 병합 (Ctrl+E)", [this] { Q_EMIT mergeDownRequested(); });
     buttons->addSpacing(6);
     btn("arrow-up", "위로", [this] { moveActive(+1); });
     btn("arrow-down", "아래로", [this] { moveActive(-1); });
@@ -205,7 +237,7 @@ void LayerPanel::markDirty() {
     if (doc_ != nullptr) {
         doc_->markDirty();
     }
-    emit layersChanged();
+    Q_EMIT layersChanged();
 }
 
 QPixmap LayerPanel::thumbnailFor(const Layer& l) const {
@@ -306,7 +338,7 @@ void LayerPanel::onRowChanged(int row) {
     const auto id = static_cast<LayerId>(list_->item(row)->data(kLayerIdRole).toULongLong());
     (void)doc_->layers().setActiveLayer(id);
     syncControlsToActive();
-    emit activeLayerChanged(id);
+    Q_EMIT activeLayerChanged(id);
 }
 
 void LayerPanel::onItemChanged(QListWidgetItem* item) {
@@ -355,7 +387,7 @@ void LayerPanel::addLayer() {
     (void)doc_->layers().setActiveLayer(made.value()->id());
     doc_->markDirty();
     refresh();
-    emit activeLayerChanged(made.value()->id());
+    Q_EMIT activeLayerChanged(made.value()->id());
 }
 
 void LayerPanel::duplicateLayer() {
@@ -366,19 +398,19 @@ void LayerPanel::duplicateLayer() {
     (void)doc_->layers().setActiveLayer(dup.value()->id());
     refresh();
     markDirty();
-    emit activeLayerChanged(dup.value()->id());
+    Q_EMIT activeLayerChanged(dup.value()->id());
 }
 
 void LayerPanel::removeLayer() {
     if (doc_ == nullptr || doc_->layers().roots().size() <= 1) return;
     const LayerId id = doc_->layers().activeLayer();
-    if (!doc_->layers().remove(id).ok()) return;
+    if (!app::removeLayerUndoable(*doc_, id).ok()) return;
     if (!doc_->layers().roots().empty()) {
         (void)doc_->layers().setActiveLayer(doc_->layers().roots().back()->id());
     }
     refresh();
     markDirty();
-    emit activeLayerChanged(doc_->layers().activeLayer());
+    Q_EMIT activeLayerChanged(doc_->layers().activeLayer());
 }
 
 void LayerPanel::moveActive(int delta) {
