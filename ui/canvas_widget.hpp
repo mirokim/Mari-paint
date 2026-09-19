@@ -115,6 +115,17 @@ public:
     /// 문서의 선택 마스크가 바깥에서 바뀌었다 — 점선을 다시 만든다.
     void selectionChangedExternally();
 
+    // ── 자유 변형 (Ctrl+T) ───────────────────────────────────────────────
+    /// 활성 레이어(선택 안)의 자유 변형을 시작한다. 실패하면 false(빈 레이어·그룹·잠금).
+    bool beginTransform();
+    /// Enter: app::transformLayer 로 실제 적용. Esc: 원상 복구.
+    void commitTransform();
+    void cancelTransform();
+    [[nodiscard]] bool transformActive() const noexcept { return xf_.active; }
+    /// 숫자 입력(옵션 바)용 — 변형 중일 때만 의미 있다.
+    void setTransformParams(f64 dx, f64 dy, f64 scaleX, f64 scaleY, f64 rotateDeg);
+    void transformFlip(bool horizontal);
+
     // ── 뷰 ───────────────────────────────────────────────────────────────
     [[nodiscard]] const mari::win::ViewState& viewState() const noexcept { return view_.state(); }
     /// 화면 점(논리 px)을 중심으로 배율을 곱한다.
@@ -138,6 +149,8 @@ signals:
     void strokeRefused(const QString& why);
     void viewChanged();
     void latencyUpdated();
+    /// 자유 변형 모드가 켜지고/꺼지고, 파라미터가 바뀔 때.
+    void transformChanged(bool active, double dx, double dy, double scaleX, double scaleY, double rotateDeg);
     /// 스포이드로 색을 집었다.
     void colorPicked(const QColor& c);
     void toolChanged(mari::ui::Tool t);
@@ -201,6 +214,23 @@ private:
     void applySelection(SelectionMask mask, Qt::KeyboardModifiers mods);
     void finishSelectionDrag(const QPointF& logicalPos, Qt::KeyboardModifiers mods);
     void bucketFill(const QPointF& logicalPos);
+
+    // 자유 변형 상태
+    struct Transforming {
+        bool active = false;
+        Rect S{};              ///< 원본 내용 영역(캔버스)
+        QImage img;            ///< 잘라 낸 픽셀(straight RGBA → ARGB32 premultiplied)
+        f64 dx = 0, dy = 0, sx = 1, sy = 1, rot = 0;
+        f64 px = 0, py = 0;    ///< 피벗(내용 중심)
+        bool flipH = false, flipV = false;
+        int drag = 0;          ///< 0 없음 · 1 이동 · 2 회전 · 3..10 핸들(0..7)
+        QPointF dragStart;     ///< 캔버스 좌표
+        f64 startDx = 0, startDy = 0, startSx = 1, startSy = 1, startRot = 0, startAngle = 0;
+    } xf_;
+    [[nodiscard]] QTransform transformMatrixCanvas() const; ///< 원본 캔버스 좌표 → 결과 캔버스 좌표
+    [[nodiscard]] int transformHitTest(const QPointF& logicalPos) const;
+    void paintTransform(QPainter& p);
+    void emitTransformChanged();
 
 public:
     /// 현재 선택 영역(없으면 캔버스 전체)을 color 로 채우거나(eraser=false) 지운다(eraser=true).

@@ -8,12 +8,14 @@
 #define MARI_UI_MAIN_WINDOW_HPP
 
 #include <mari/app/application.hpp>
+#include <mari/app/image_ops.hpp>
 #include <mari/app/live_stroke.hpp>
 #include <mari/brush/preset.hpp>
 
 #include <QColor>
 #include <QMainWindow>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -76,6 +78,12 @@ private:
     void showPalette(const QPoint& globalPos);
     void mergeDown();
     void flattenImage();
+    // 이미지 메뉴
+    void runAdjust(app::AdjustKind kind);
+    void runCanvasOp(const std::function<Result<void>(app::Document&)>& fn);
+    void showImageSizeDialog(bool canvasOnly);
+    void beginFreeTransform();
+    void afterPixelChange();
     void showShortcutDialog();
     // 브러시 라이브러리(.mbp 폴더 = 헤드리스와 공유)
     void reloadBrushes(const QString& selectName = QString());
@@ -116,6 +124,13 @@ private:
     QSpinBox* opacitySpin_ = nullptr;
     QComboBox* smoothingCombo_ = nullptr;
     QWidget* floodOptions_ = nullptr;
+    QWidget* transformOptions_ = nullptr;
+    QDoubleSpinBox* xfDx_ = nullptr;
+    QDoubleSpinBox* xfDy_ = nullptr;
+    QDoubleSpinBox* xfSx_ = nullptr;
+    QDoubleSpinBox* xfSy_ = nullptr;
+    QDoubleSpinBox* xfRot_ = nullptr;
+    bool xfSyncing_ = false;
     QSpinBox* toleranceSpin_ = nullptr;
     QSpinBox* gapSpin_ = nullptr;
     QActionGroup* toolGroup_ = nullptr;

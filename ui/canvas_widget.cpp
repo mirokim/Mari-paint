@@ -13,11 +13,14 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QLineF>
 #include <QPainter>
+#include <QPolygonF>
 #include <QTimer>
 #include <QBitmap>
 #include <QRegion>
 
+#include <mari/app/image_ops.hpp>
 #include <mari/app/layer_commands.hpp>
 #include <QWheelEvent>
 
@@ -292,8 +295,9 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
         p.setPen(Qt::white);
         p.drawText(box, Qt::AlignCenter, txt);
     }
+    if (xf_.active) paintTransform(p);
     // 선택 점선(marching ants): 캔버스 좌표 경로를 뷰 변환으로 그린다. 코스메틱 펜이라 줌과 무관하게 1px.
-    if (hasSelection_) {
+    if (hasSelection_ && !xf_.active) {
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setTransform(canvasToWidget());
         QPen white(Qt::white, 0);
@@ -420,7 +424,7 @@ bool CanvasWidget::nativeEventFilter(const QByteArray& eventType, void* message,
         const bool inside = physRect().contains(QPointF(pt.x, pt.y));
         // 뷰 드래그(Space·손 도구)와 스포이드는 Qt 마우스 이벤트로 처리한다 — 획이 아니다.
         const bool notAStroke = viewDragActive() || tool_ == Tool::Eyedropper || altEyedropper_ || shiftDown_ ||
-                                isSelectionTool(tool_) || tool_ == Tool::Fill;
+                                isSelectionTool(tool_) || tool_ == Tool::Fill || xf_.active;
         if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam) || notAStroke) {
             bypassId_ = id;
             return false;
@@ -849,6 +853,135 @@ void CanvasWidget::bucketFill(const QPointF& logicalPos) {
     Q_EMIT regionFilled();
 }
 
+// ── 자유 변형 ─────────────────────────────────────────────────────────────
+
+bool CanvasWidget::beginTransform() {
+    if (doc_ == nullptr || live_ != nullptr || xf_.active) return false;
+    const LayerId lid = doc_->layers().activeLayer();
+    Rect S{};
+    Result<ora::Image8> ex = app::extractForTransform(*doc_, lid, S);
+    if (!ex.ok() || S.isEmpty()) {
+        Q_EMIT strokeRefused(ex.ok() ? QString("변형할 내용이 없다") : QString::fromStdString(ex.message()));
+        return false;
+    }
+    // 잘라 낸 자리를 비운다(실행취소 항목 하나 — 적용/취소 때 되돌린다).
+    ora::Image8 remain = app::remainderForTransform(*doc_, lid, S);
+    if (!doc_->paintPixels(lid, S, remain.pixels.data(), remain.pixels.size(), "변형 준비").ok()) return false;
+    xf_ = Transforming{};
+    xf_.active = true;
+    xf_.S = S;
+    QImage img(ex.value().pixels.data(), S.width, S.height, static_cast<int>(ex.value().stride()), QImage::Format_RGBA8888);
+    xf_.img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    xf_.px = S.x + S.width * 0.5;
+    xf_.py = S.y + S.height * 0.5;
+    invalidateCanvas(S);
+    emitTransformChanged();
+    update();
+    return true;
+}
+
+QTransform CanvasWidget::transformMatrixCanvas() const {
+    QTransform m;
+    m.translate(xf_.px + xf_.dx, xf_.py + xf_.dy);
+    m.rotate(xf_.rot);
+    m.scale(xf_.sx * (xf_.flipH ? -1.0 : 1.0), xf_.sy * (xf_.flipV ? -1.0 : 1.0));
+    m.translate(-xf_.px, -xf_.py);
+    return m;
+}
+
+int CanvasWidget::transformHitTest(const QPointF& logicalPos) const {
+    const QTransform full = transformMatrixCanvas() * canvasToWidget();
+    const QRectF box(xf_.S.x, xf_.S.y, xf_.S.width, xf_.S.height);
+    const QPointF corners[8] = {box.topLeft(), QPointF(box.center().x(), box.top()), box.topRight(),
+                                QPointF(box.right(), box.center().y()), box.bottomRight(),
+                                QPointF(box.center().x(), box.bottom()), box.bottomLeft(),
+                                QPointF(box.left(), box.center().y())};
+    for (int i = 0; i < 8; ++i) {
+        if (QLineF(full.map(corners[i]), logicalPos).length() <= 7.0) return 3 + i;
+    }
+    const QPolygonF poly = full.map(QPolygonF(box));
+    if (poly.containsPoint(logicalPos, Qt::OddEvenFill)) return 1;
+    // 상자 밖 가까운 곳은 회전.
+    QRectF outer = poly.boundingRect().adjusted(-30, -30, 30, 30);
+    if (outer.contains(logicalPos)) return 2;
+    return 0;
+}
+
+void CanvasWidget::paintTransform(QPainter& p) {
+    const QTransform full = transformMatrixCanvas() * canvasToWidget();
+    p.save();
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.setTransform(full);
+    p.drawImage(QPointF(xf_.S.x, xf_.S.y), xf_.img);
+    p.restore();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF box(xf_.S.x, xf_.S.y, xf_.S.width, xf_.S.height);
+    const QPolygonF poly = full.map(QPolygonF(box));
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(0, 0, 0, 160), 3.0));
+    p.drawPolygon(poly);
+    p.setPen(QPen(QColor(0x3d, 0x7b, 0xd9), 1.5));
+    p.drawPolygon(poly);
+    const QPointF handles[8] = {box.topLeft(), QPointF(box.center().x(), box.top()), box.topRight(),
+                                QPointF(box.right(), box.center().y()), box.bottomRight(),
+                                QPointF(box.center().x(), box.bottom()), box.bottomLeft(),
+                                QPointF(box.left(), box.center().y())};
+    p.setBrush(Qt::white);
+    for (const QPointF& h : handles) p.drawRect(QRectF(full.map(h) - QPointF(4, 4), QSizeF(8, 8)));
+    // 피벗
+    const QPointF pv = canvasToWidget().map(QPointF(xf_.px + xf_.dx, xf_.py + xf_.dy));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(pv, 5, 5);
+    p.drawLine(pv - QPointF(8, 0), pv + QPointF(8, 0));
+    p.drawLine(pv - QPointF(0, 8), pv + QPointF(0, 8));
+}
+
+void CanvasWidget::emitTransformChanged() {
+    Q_EMIT transformChanged(xf_.active, xf_.dx, xf_.dy, xf_.sx, xf_.sy, xf_.rot);
+}
+
+void CanvasWidget::setTransformParams(f64 dx, f64 dy, f64 scaleX, f64 scaleY, f64 rotateDeg) {
+    if (!xf_.active) return;
+    xf_.dx = dx; xf_.dy = dy; xf_.sx = scaleX; xf_.sy = scaleY; xf_.rot = rotateDeg;
+    update();
+}
+
+void CanvasWidget::transformFlip(bool horizontal) {
+    if (!xf_.active) return;
+    if (horizontal) xf_.flipH = !xf_.flipH; else xf_.flipV = !xf_.flipV;
+    update();
+}
+
+void CanvasWidget::commitTransform() {
+    if (!xf_.active || doc_ == nullptr) return;
+    const LayerId lid = doc_->layers().activeLayer();
+    app::TransformParams tp;
+    tp.dx = xf_.dx; tp.dy = xf_.dy; tp.scaleX = xf_.sx; tp.scaleY = xf_.sy; tp.rotateDeg = xf_.rot;
+    tp.flipH = xf_.flipH; tp.flipV = xf_.flipV;
+    tp.usePivot = true; tp.pivotX = xf_.px; tp.pivotY = xf_.py;
+    const Rect S = xf_.S;
+    xf_ = Transforming{};
+    (void)doc_->undo(); // "변형 준비" 되돌리기 — 원본을 다시 놓고 진짜 변형을 한 번에 한다
+    const Result<Rect> r = app::transformLayer(*doc_, StrokeSource::humanPen(), lid, tp);
+    if (!r.ok()) Q_EMIT strokeRefused(QString::fromStdString(r.message()));
+    invalidateCanvas();
+    setCursor(Qt::ArrowCursor);
+    emitTransformChanged();
+    Q_EMIT regionFilled();
+    update();
+    (void)S;
+}
+
+void CanvasWidget::cancelTransform() {
+    if (!xf_.active || doc_ == nullptr) return;
+    xf_ = Transforming{};
+    (void)doc_->undo();
+    invalidateCanvas();
+    setCursor(Qt::ArrowCursor);
+    emitTransformChanged();
+    update();
+}
+
 void CanvasWidget::fillSelection(const QColor& color, bool eraser) {
     if (doc_ == nullptr || live_ != nullptr) return;
     const LayerId lid = doc_->layers().activeLayer();
@@ -911,6 +1044,15 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
         e->accept();
         return;
     }
+    if (xf_.active && e->button() == Qt::LeftButton && !viewDragActive()) {
+        const QPointF c = canvasToWidget().inverted().map(e->position());
+        xf_.drag = transformHitTest(e->position());
+        xf_.dragStart = c;
+        xf_.startDx = xf_.dx; xf_.startDy = xf_.dy; xf_.startSx = xf_.sx; xf_.startSy = xf_.sy; xf_.startRot = xf_.rot;
+        xf_.startAngle = std::atan2(c.y() - (xf_.py + xf_.dy), c.x() - (xf_.px + xf_.dx)) * 180.0 / 3.14159265358979;
+        e->accept();
+        return;
+    }
     if (e->button() == Qt::LeftButton && !viewDragActive() && !altEyedropper_) {
         if (tool_ == Tool::Fill) {
             bucketFill(e->position());
@@ -965,6 +1107,53 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
 }
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
+    if (xf_.active) {
+        const QPointF c = canvasToWidget().inverted().map(e->position());
+        if (xf_.drag == 0) {
+            const int h = transformHitTest(e->position());
+            setCursor(h == 1 ? Qt::SizeAllCursor : h == 2 ? Qt::CrossCursor : h >= 3 ? Qt::SizeFDiagCursor : Qt::ArrowCursor);
+            e->accept();
+            return;
+        }
+        const f64 ddx = c.x() - xf_.dragStart.x(), ddy = c.y() - xf_.dragStart.y();
+        if (xf_.drag == 1) {
+            xf_.dx = xf_.startDx + ddx;
+            xf_.dy = xf_.startDy + ddy;
+        } else if (xf_.drag == 2) {
+            const f64 ang = std::atan2(c.y() - (xf_.py + xf_.dy), c.x() - (xf_.px + xf_.dx)) * 180.0 / 3.14159265358979;
+            f64 r = xf_.startRot + (ang - xf_.startAngle);
+            if (e->modifiers() & Qt::ShiftModifier) r = std::round(r / 15.0) * 15.0;
+            xf_.rot = r;
+        } else {
+            // 핸들: 피벗 기준 거리 비율로 확대. 0..7 = 좌상,상,우상,우,우하,하,좌하,좌 (원본 좌표계에서).
+            const int h = xf_.drag - 3;
+            // 마우스 위치를 원본 좌표계로 되돌린다(회전·이동 제거) → 피벗 기준 반지름 비율.
+            const f64 th = -xf_.rot * 3.14159265358979 / 180.0;
+            const auto local = [&](const QPointF& q, f64& lx, f64& ly) {
+                const f64 rx = q.x() - (xf_.px + xf_.dx), ry = q.y() - (xf_.py + xf_.dy);
+                lx = rx * std::cos(th) - ry * std::sin(th);
+                ly = rx * std::sin(th) + ry * std::cos(th);
+            };
+            f64 lx0, ly0, lx1, ly1;
+            local(xf_.dragStart, lx0, ly0);
+            local(c, lx1, ly1);
+            const bool horiz = h == 1 || h == 5; // 상·하 핸들은 세로만
+            const bool vert = h == 3 || h == 7;  // 좌·우 핸들은 가로만
+            f64 kx = (std::fabs(lx0) > 1e-3 && !horiz) ? lx1 / lx0 : 1.0;
+            f64 ky = (std::fabs(ly0) > 1e-3 && !vert) ? ly1 / ly0 : 1.0;
+            if (e->modifiers() & Qt::ShiftModifier) { const f64 k = (std::fabs(kx - 1) > std::fabs(ky - 1)) ? kx : ky; kx = ky = k; }
+            if (horiz) kx = 1.0;
+            if (vert) ky = 1.0;
+            xf_.sx = std::clamp(xf_.startSx * kx, -64.0, 64.0);
+            xf_.sy = std::clamp(xf_.startSy * ky, -64.0, 64.0);
+            if (std::fabs(xf_.sx) < 0.01) xf_.sx = 0.01;
+            if (std::fabs(xf_.sy) < 0.01) xf_.sy = 0.01;
+        }
+        emitTransformChanged();
+        update();
+        e->accept();
+        return;
+    }
     if (selDrag_) {
         selCur_ = e->position();
         if (tool_ == Tool::SelectLasso) {
@@ -1021,6 +1210,11 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
 }
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) {
+    if (xf_.active && e->button() == Qt::LeftButton) {
+        xf_.drag = 0;
+        e->accept();
+        return;
+    }
     if (selDrag_ && e->button() == Qt::LeftButton) {
         selDrag_ = false;
         finishSelectionDrag(e->position(), e->modifiers());
@@ -1060,6 +1254,19 @@ void CanvasWidget::keyPressEvent(QKeyEvent* e) {
     if (e->isAutoRepeat()) {
         e->accept();
         return;
+    }
+    if (xf_.active) {
+        if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) { commitTransform(); e->accept(); return; }
+        if (e->key() == Qt::Key_Escape) { cancelTransform(); e->accept(); return; }
+        // 화살표: 1px(Shift: 10px) 이동.
+        const f64 step = (e->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
+        bool moved = true;
+        if (e->key() == Qt::Key_Left) xf_.dx -= step;
+        else if (e->key() == Qt::Key_Right) xf_.dx += step;
+        else if (e->key() == Qt::Key_Up) xf_.dy -= step;
+        else if (e->key() == Qt::Key_Down) xf_.dy += step;
+        else moved = false;
+        if (moved) { emitTransformChanged(); update(); e->accept(); return; }
     }
     // Space 계열은 "눌린 동안 모드" 다. 수식키는 누른 시점의 것을 본다.
     if (e->key() == Qt::Key_Space && live_ == nullptr) {

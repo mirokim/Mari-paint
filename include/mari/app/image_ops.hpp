@@ -8,6 +8,7 @@
 
 #include <mari/app/document.hpp>
 #include <mari/core/origin.hpp>
+#include <mari/ora/image.hpp>
 
 #include <vector>
 
@@ -59,6 +60,11 @@ struct TransformParams {
     bool flipH = false, flipV = false;
     bool bilinear = true;
 };
+
+/// 변형 대상(선택 안·알파>0 로 조인 영역)의 픽셀을 꺼낸다(선택값을 알파에 곱한 것). GUI 미리보기용.
+[[nodiscard]] Result<ora::Image8> extractForTransform(Document& doc, LayerId layerId, Rect& outArea);
+/// 같은 영역에서 "남는" 픽셀(선택 밖 부분). 미리보기 동안 잘라 낸 자리에 놓는다.
+[[nodiscard]] ora::Image8 remainderForTransform(Document& doc, LayerId layerId, const Rect& area);
 
 /// 레이어(선택이 있으면 선택 안 픽셀만)를 변형한다. 선택 밖은 그대로, 선택 안 원본은 지워진다(잘라 붙이기).
 /// 돌려주는 값 = 바뀐 영역(원본 ∪ 결과).

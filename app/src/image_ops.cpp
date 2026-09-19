@@ -363,6 +363,66 @@ Result<u32> adjustLayer(Document& doc, const StrokeSource& src, LayerId layerId,
 
 // ── 자유 변형 ─────────────────────────────────────────────────────────────
 
+Result<ora::Image8> extractForTransform(Document& doc, LayerId layerId, Rect& outArea) {
+    outArea = Rect{};
+    const LayerPtr layer = doc.layers().find(layerId);
+    if (!layer || layer->tiles() == nullptr) return Err("래스터 레이어가 아니다", ErrorCode::InvalidArgument);
+    if (layer->locked()) return Err("잠긴 레이어다", ErrorCode::InvalidArgument);
+    const Rect canvas = canvasRect(doc);
+    const SelectionMask& sel = doc.selectionMask();
+    Rect S = layer->tiles()->bounds().intersected(canvas);
+    if (!sel.isAll()) S = S.intersected(sel.bounds());
+    if (S.isEmpty()) return Ok(ora::Image8{});
+    // 타일 경계는 64px 단위라 헐렁하다 — 실제 내용(알파>0 · 선택 안)으로 조인다.
+    Result<ora::Image8> probe = ora::readRegion(*layer->tiles(), S);
+    if (!probe.ok()) return probe.error();
+    i32 minx = S.width, miny = S.height, maxx = -1, maxy = -1;
+    for (i32 y = 0; y < S.height; ++y) {
+        const u8* row = probe.value().pixels.data() + static_cast<usize>(y) * probe.value().stride();
+        for (i32 x = 0; x < S.width; ++x) {
+            if (row[x * 4 + 3] == 0) continue;
+            if (!sel.isAll() && sel.valueAt(S.x + x, S.y + y) == 0) continue;
+            minx = std::min(minx, x); maxx = std::max(maxx, x);
+            miny = std::min(miny, y); maxy = std::max(maxy, y);
+        }
+    }
+    if (maxx < 0) return Ok(ora::Image8{});
+    S = Rect{S.x + minx, S.y + miny, maxx - minx + 1, maxy - miny + 1};
+    Result<ora::Image8> had = ora::readRegion(*layer->tiles(), S);
+    if (!had.ok()) return had.error();
+    ora::Image8 extract = std::move(had).value();
+    if (!sel.isAll()) {
+        for (i32 y = 0; y < S.height; ++y) {
+            u8* e = extract.pixels.data() + static_cast<usize>(y) * extract.stride();
+            for (i32 x = 0; x < S.width; ++x, e += 4) {
+                const u32 m = sel.valueAt(S.x + x, S.y + y);
+                e[3] = static_cast<u8>((e[3] * m + 127u) / 255u);
+            }
+        }
+    }
+    outArea = S;
+    return Ok(std::move(extract));
+}
+
+ora::Image8 remainderForTransform(Document& doc, LayerId layerId, const Rect& S) {
+    ora::Image8 remain = ora::Image8::make(S.width, S.height);
+    const LayerPtr layer = doc.layers().find(layerId);
+    if (!layer || layer->tiles() == nullptr || S.isEmpty()) return remain;
+    const SelectionMask& sel = doc.selectionMask();
+    if (sel.isAll()) return remain; // 전부 잘려 나간다
+    Result<ora::Image8> had = ora::readRegion(*layer->tiles(), S);
+    if (!had.ok()) return remain;
+    remain = std::move(had).value();
+    for (i32 y = 0; y < S.height; ++y) {
+        u8* r = remain.pixels.data() + static_cast<usize>(y) * remain.stride();
+        for (i32 x = 0; x < S.width; ++x, r += 4) {
+            const u32 m = sel.valueAt(S.x + x, S.y + y);
+            r[3] = static_cast<u8>((r[3] * (255u - m) + 127u) / 255u);
+        }
+    }
+    return remain;
+}
+
 Result<Rect> transformLayer(Document& doc, const StrokeSource& src, LayerId layerId, const TransformParams& p) {
     if (doc.recordingBroken()) return Err("기록이 고장 나 있다 — 기록 없이 바꾸지 않는다(docs/06 결정 ④)", ErrorCode::IoError);
     const LayerPtr layer = doc.layers().find(layerId);
@@ -372,46 +432,13 @@ Result<Rect> transformLayer(Document& doc, const StrokeSource& src, LayerId laye
 
     const Rect canvas = canvasRect(doc);
     const SelectionMask& sel = doc.selectionMask();
-    Rect S = layer->tiles()->bounds().intersected(canvas);
-    if (!sel.isAll()) S = S.intersected(sel.bounds());
+    Rect S{};
+    Result<ora::Image8> ext = extractForTransform(doc, layerId, S);
+    if (!ext.ok()) return ext.error();
     if (S.isEmpty()) return Ok(Rect{});
-
-    // 타일 경계는 64px 단위라 헐렁하다 — 실제 내용(알파>0 · 선택 안)으로 조인다. 회전·확대 중심이 여기서 나온다.
-    {
-        Result<ora::Image8> probe = ora::readRegion(*layer->tiles(), S);
-        if (!probe.ok()) return probe.error();
-        i32 minx = S.width, miny = S.height, maxx = -1, maxy = -1;
-        for (i32 y = 0; y < S.height; ++y) {
-            const u8* row = probe.value().pixels.data() + static_cast<usize>(y) * probe.value().stride();
-            for (i32 x = 0; x < S.width; ++x) {
-                if (row[x * 4 + 3] == 0) continue;
-                if (!sel.isAll() && sel.valueAt(S.x + x, S.y + y) == 0) continue;
-                minx = std::min(minx, x); maxx = std::max(maxx, x);
-                miny = std::min(miny, y); maxy = std::max(maxy, y);
-            }
-        }
-        if (maxx < 0) return Ok(Rect{});
-        S = Rect{S.x + minx, S.y + miny, maxx - minx + 1, maxy - miny + 1};
-    }
-
-    // 원본: 선택 안 픽셀(extract)과 남는 픽셀(remain).
-    Result<ora::Image8> had = ora::readRegion(*layer->tiles(), S);
-    if (!had.ok()) return had.error();
-    ora::Image8 extract = had.value();
-    ora::Image8 remain = had.value();
-    if (!sel.isAll()) {
-        for (i32 y = 0; y < S.height; ++y) {
-            u8* e = extract.pixels.data() + static_cast<usize>(y) * extract.stride();
-            u8* r = remain.pixels.data() + static_cast<usize>(y) * remain.stride();
-            for (i32 x = 0; x < S.width; ++x, e += 4, r += 4) {
-                const u32 m = sel.valueAt(S.x + x, S.y + y);
-                e[3] = static_cast<u8>((e[3] * m + 127u) / 255u);
-                r[3] = static_cast<u8>((r[3] * (255u - m) + 127u) / 255u);
-            }
-        }
-    } else {
-        std::fill(remain.pixels.begin(), remain.pixels.end(), u8{0});
-    }
+    ora::Image8 extract = std::move(ext).value();
+    ora::Image8 remain = remainderForTransform(doc, layerId, S);
+    (void)sel;
 
     // 정방향 행렬: 원본 좌표 → 결과 좌표. T(pivot + d) · R · Scale · Flip · T(−pivot)
     const f64 px = p.usePivot ? p.pivotX : S.x + S.width * 0.5;

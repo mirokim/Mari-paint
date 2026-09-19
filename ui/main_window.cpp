@@ -1,6 +1,7 @@
 // Mari Paint — 최소 UI 구현 (ui/main_window.hpp)
 #include "main_window.hpp"
 
+#include "adjust_dialog.hpp"
 #include "brush_editor.hpp"
 #include "brush_panel.hpp"
 #include "canvas_widget.hpp"
@@ -33,7 +34,10 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QTreeWidget>
+#include <QFormLayout>
+#include <QPushButton>
 #include <QDialog>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QVBoxLayout>
 #include <QSettings>
@@ -207,6 +211,9 @@ void MainWindow::buildMenus() {
     // 포토샵: Ctrl+Shift+Z 다시 실행(Ctrl+Y 도 받는다)
     redoAction_->setShortcuts({QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z), QKeySequence(Qt::CTRL | Qt::Key_Y)});
     edit->addSeparator();
+    edit->addAction(themedIcon("arrows-maximize", 20), "자유 변형", QKeySequence(Qt::CTRL | Qt::Key_T), this,
+                    &MainWindow::beginFreeTransform);
+    edit->addSeparator();
     edit->addAction("전경색으로 채우기", QKeySequence(Qt::ALT | Qt::Key_Backspace), this,
                     [this] { canvas_->fillSelection(colorPanel_->foreground(), false); });
     edit->addAction("배경색으로 채우기", QKeySequence(Qt::CTRL | Qt::Key_Backspace), this,
@@ -232,6 +239,35 @@ void MainWindow::buildMenus() {
                       [this] { canvas_->invertSelection(); });
     select->addSeparator();
     select->addAction("수식키: Shift 더하기 · Alt 빼기 · Shift+Alt 교집합")->setEnabled(false);
+
+    QMenu* image = menuBar()->addMenu("이미지(&I)");
+    QMenu* adj = image->addMenu("보정");
+    adj->addAction("밝기/대비...", this, [this] { runAdjust(app::AdjustKind::BrightnessContrast); });
+    adj->addAction("레벨...", QKeySequence(Qt::CTRL | Qt::Key_L), this, [this] { runAdjust(app::AdjustKind::Levels); });
+    adj->addAction("곡선...", QKeySequence(Qt::CTRL | Qt::Key_M), this, [this] { runAdjust(app::AdjustKind::Curves); });
+    adj->addAction("색조/채도...", QKeySequence(Qt::CTRL | Qt::Key_U), this, [this] { runAdjust(app::AdjustKind::HueSaturation); });
+    adj->addSeparator();
+    adj->addAction("반전", QKeySequence(Qt::CTRL | Qt::Key_I), this, [this] { runAdjust(app::AdjustKind::Invert); });
+    adj->addAction("채도 제거", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_U), this, [this] { runAdjust(app::AdjustKind::Desaturate); });
+    adj->addAction("문턱값...", this, [this] { runAdjust(app::AdjustKind::Threshold); });
+    adj->addAction("포스터화...", this, [this] { runAdjust(app::AdjustKind::Posterize); });
+    image->addSeparator();
+    image->addAction("이미지 크기...", QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_I), this, [this] { showImageSizeDialog(false); });
+    image->addAction("캔버스 크기...", QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_C), this, [this] { showImageSizeDialog(true); });
+    image->addAction("선택 영역으로 자르기", this, [this] {
+        runCanvasOp([](app::Document& d) {
+            if (d.selectionMask().isAll()) return Result<void>(Err("선택이 없다", ErrorCode::InvalidArgument));
+            return app::cropCanvas(d, StrokeSource::humanPen(), d.selectionMask().bounds());
+        });
+    });
+    image->addSeparator();
+    QMenu* rot = image->addMenu("이미지 회전");
+    rot->addAction("시계 방향 90°", this, [this] { runCanvasOp([](app::Document& d) { return app::rotateCanvas(d, StrokeSource::humanPen(), 1); }); });
+    rot->addAction("반시계 방향 90°", this, [this] { runCanvasOp([](app::Document& d) { return app::rotateCanvas(d, StrokeSource::humanPen(), 3); }); });
+    rot->addAction("180°", this, [this] { runCanvasOp([](app::Document& d) { return app::rotateCanvas(d, StrokeSource::humanPen(), 2); }); });
+    rot->addSeparator();
+    rot->addAction("캔버스 좌우 뒤집기", this, [this] { runCanvasOp([](app::Document& d) { return app::flipCanvas(d, StrokeSource::humanPen(), true); }); });
+    rot->addAction("캔버스 상하 뒤집기", this, [this] { runCanvasOp([](app::Document& d) { return app::flipCanvas(d, StrokeSource::humanPen(), false); }); });
 
     QMenu* brushMenu = menuBar()->addMenu("브러시(&B)");
     brushMenu->addAction(themedIcon("folder-open", 20), "브러시 가져오기... (.abr · .sut · .mbp)", this, &MainWindow::importBrushes);
@@ -440,6 +476,56 @@ void MainWindow::buildToolbars() {
     }
     optionsBar_->addWidget(floodOptions_);
     floodOptions_->setVisible(false);
+
+    // 자유 변형 옵션(변형 중일 때만)
+    transformOptions_ = new QWidget(optionsBar_);
+    {
+        auto* row = new QHBoxLayout(transformOptions_);
+        row->setContentsMargins(6, 0, 0, 0);
+        row->setSpacing(4);
+        const auto spin = [&](const char* label, double lo, double hi, double v, const char* suffix) {
+            row->addWidget(new QLabel(label, transformOptions_));
+            auto* sp = new QDoubleSpinBox(transformOptions_);
+            sp->setRange(lo, hi);
+            sp->setDecimals(1);
+            sp->setValue(v);
+            sp->setSuffix(suffix);
+            sp->setFixedWidth(84);
+            row->addWidget(sp);
+            connect(sp, &QDoubleSpinBox::valueChanged, this, [this](double) {
+                if (xfSyncing_) return;
+                canvas_->setTransformParams(xfDx_->value(), xfDy_->value(), xfSx_->value() / 100.0, xfSy_->value() / 100.0, xfRot_->value());
+            });
+            return sp;
+        };
+        xfDx_ = spin("X", -100000, 100000, 0, " px");
+        xfDy_ = spin("Y", -100000, 100000, 0, " px");
+        xfSx_ = spin("W", -6400, 6400, 100, " %");
+        xfSy_ = spin("H", -6400, 6400, 100, " %");
+        xfRot_ = spin("각도", -3600, 3600, 0, "°");
+        auto* flipH = new QPushButton("좌우", transformOptions_);
+        auto* flipV = new QPushButton("상하", transformOptions_);
+        auto* ok = new QPushButton("적용 (Enter)", transformOptions_);
+        auto* cancel = new QPushButton("취소 (Esc)", transformOptions_);
+        connect(flipH, &QPushButton::clicked, this, [this] { canvas_->transformFlip(true); });
+        connect(flipV, &QPushButton::clicked, this, [this] { canvas_->transformFlip(false); });
+        connect(ok, &QPushButton::clicked, this, [this] { canvas_->commitTransform(); });
+        connect(cancel, &QPushButton::clicked, this, [this] { canvas_->cancelTransform(); });
+        row->addWidget(flipH);
+        row->addWidget(flipV);
+        row->addWidget(ok);
+        row->addWidget(cancel);
+    }
+    optionsBar_->addWidget(transformOptions_);
+    transformOptions_->setVisible(false);
+    connect(canvas_, &CanvasWidget::transformChanged, this,
+            [this](bool active, double dx, double dy, double sx, double sy, double rot) {
+                transformOptions_->setVisible(active);
+                xfSyncing_ = true;
+                xfDx_->setValue(dx); xfDy_->setValue(dy); xfSx_->setValue(sx * 100.0); xfSy_->setValue(sy * 100.0); xfRot_->setValue(rot);
+                xfSyncing_ = false;
+                if (!active) afterPixelChange();
+            });
 
     optionsBar_->addSeparator();
     optionsBar_->addAction(undoAction_);
@@ -889,6 +975,114 @@ void MainWindow::deleteBrush(int index) {
         return;
     (void)agent::removePresetFile(brushDir_, name);
     reloadBrushes();
+}
+
+// ── 이미지 메뉴 ───────────────────────────────────────────────────────────
+
+void MainWindow::afterPixelChange() {
+    canvas_->invalidateCanvas();
+    layerPanel_->refresh();
+    thumbTimer_->start();
+    refreshTitle();
+    refreshStatus();
+}
+
+void MainWindow::runAdjust(app::AdjustKind kind) {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr || canvas_->strokeActive() || canvas_->transformActive()) return;
+    const LayerId lid = doc->layers().activeLayer();
+    const auto apply = [this, doc, lid](const app::AdjustParams& p) {
+        const Result<u32> r = app::adjustLayer(*doc, StrokeSource::humanPen(), lid, p);
+        if (!r.ok()) {
+            statusBar()->showMessage(QString::fromStdString(r.message()), 4000);
+            return false;
+        }
+        canvas_->invalidateCanvas();
+        return r.value() > 0;
+    };
+    const auto undo = [this, doc] {
+        (void)doc->undo();
+        canvas_->invalidateCanvas();
+    };
+    if (kind == app::AdjustKind::Invert || kind == app::AdjustKind::Desaturate) {
+        app::AdjustParams p;
+        p.kind = kind;
+        apply(p);
+        afterPixelChange();
+        return;
+    }
+    AdjustDialog dlg(kind, apply, undo, this);
+    dlg.exec();
+    afterPixelChange();
+}
+
+void MainWindow::runCanvasOp(const std::function<Result<void>(app::Document&)>& fn) {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr || canvas_->strokeActive() || canvas_->transformActive()) return;
+    const Result<void> r = fn(*doc);
+    if (!r.ok()) {
+        statusBar()->showMessage(QString::fromStdString(r.message()), 4000);
+        return;
+    }
+    canvas_->setDocument(doc); // 캔버스 크기가 바뀌었을 수 있다 — 백킹을 새로 잡는다
+    canvas_->selectionChangedExternally();
+    afterPixelChange();
+}
+
+void MainWindow::showImageSizeDialog(bool canvasOnly) {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr) return;
+    const Size cs = doc->canvasSize();
+    QDialog dlg(this);
+    dlg.setWindowTitle(canvasOnly ? "캔버스 크기" : "이미지 크기");
+    auto* form = new QFormLayout(&dlg);
+    auto* w = new QSpinBox(&dlg);
+    w->setRange(1, 32768);
+    w->setValue(cs.width);
+    w->setSuffix(" px");
+    auto* h = new QSpinBox(&dlg);
+    h->setRange(1, 32768);
+    h->setValue(cs.height);
+    h->setSuffix(" px");
+    form->addRow("너비", w);
+    form->addRow("높이", h);
+    auto* keep = new QCheckBox("비율 유지", &dlg);
+    keep->setChecked(!canvasOnly);
+    form->addRow("", keep);
+    const double ratio = static_cast<double>(cs.width) / std::max(1, cs.height);
+    bool syncing = false;
+    connect(w, &QSpinBox::valueChanged, &dlg, [&](int v) { if (keep->isChecked() && !syncing) { syncing = true; h->setValue(std::max(1, static_cast<int>(std::lround(v / ratio)))); syncing = false; } });
+    connect(h, &QSpinBox::valueChanged, &dlg, [&](int v) { if (keep->isChecked() && !syncing) { syncing = true; w->setValue(std::max(1, static_cast<int>(std::lround(v * ratio)))); syncing = false; } });
+    QComboBox* anchor = nullptr;
+    if (canvasOnly) {
+        anchor = new QComboBox(&dlg);
+        anchor->addItems({"왼쪽 위", "위", "오른쪽 위", "왼쪽", "가운데", "오른쪽", "왼쪽 아래", "아래", "오른쪽 아래"});
+        anchor->setCurrentIndex(4);
+        form->addRow("기준점", anchor);
+    }
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText("확인");
+    buttons->button(QDialogButtonBox::Cancel)->setText("취소");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const Size ns{w->value(), h->value()};
+    if (ns == cs) return;
+    if (canvasOnly) {
+        const int a = anchor->currentIndex();
+        runCanvasOp([ns, a](app::Document& d) { return app::resizeCanvas(d, StrokeSource::humanPen(), ns, a % 3, a / 3); });
+    } else {
+        runCanvasOp([ns](app::Document& d) { return app::scaleImage(d, StrokeSource::humanPen(), ns); });
+    }
+}
+
+void MainWindow::beginFreeTransform() {
+    if (activeDocument() == nullptr || canvas_->strokeActive()) return;
+    if (canvas_->transformActive()) { canvas_->commitTransform(); return; }
+    canvas_->setFocus();
+    if (!canvas_->beginTransform()) statusBar()->showMessage("변형할 내용이 없다(빈 레이어·그룹·잠금)", 3000);
+    else statusBar()->showMessage("자유 변형: 드래그 이동 · 모서리 확대(Shift 비율) · 바깥 회전(Shift 15°) · Enter 적용 · Esc 취소", 8000);
 }
 
 void MainWindow::togglePanels() {

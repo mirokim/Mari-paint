@@ -138,7 +138,7 @@ GUI: 브러시 도크(엔진 미리보기 격자·검색·우클릭 편집/복�
 가져오기 리포트(버림/근사/정보). 에이전트: `brush.import(persist)` · `brush.save` · `brush.remove` · `brush.export`.
 
 **에이전트 도구 동등성**(사람이 GUI 로 하는 것 = 헤드리스로 같은 코어 경로): `bucket` · `select mode=wand` · `layer.flatten` ·
-`layer.mask` · `layer.group/ungroup` · 획 점에 `tx/ty/t` · `background`. 남은 것: 자유 변형·색 보정(둘 다 GUI 도 아직 없음).
+`layer.mask` · `layer.group/ungroup` · 획 점에 `tx/ty/t` · `background`. 자유 변형(`transform` 확대·회전 포함)·색 보정(`adjust`)·캔버스 연산(`canvas`)도 2026-09-19 추가 — GUI 와 같은 image_ops.
 
 ### 11.1 실물 파일 검증 (2026-09-19)
 
@@ -157,3 +157,10 @@ BrushThickness(100=원)/BrushRotation(90=똑바로)/Opacity/BrushFlow/CompositeM
 `11×u32 머리말([3]=최솟값%, [6]=랜덤%) + (12,n,16) 블록(BE double 점)` — 첫 블록을 필압 커브로 반영, 두 번째(속도/기울기 추정)는 리포트만.
 스프레이(`BrushUseSpray/SpraySize/SprayDensity`)→흩뿌림·개수, `UseDualBrush/Dual*`→듀얼, `BrushUseWaterEdge`→젖은 가장자리,
 `BrushHue/Saturation/Value/SubColor`→색 변화. 남은 불확실: BrushRotationEffector 열거값(실물 5개 전부 3), 속도·기울기 커브.
+
+### 11.2 이미지 연산 (2026-09-19)
+
+`app/image_ops`: 색 보정 8종(선택 안, 알파 보존) · 자유 변형(내용 경계 기준 피벗, 쌍선형, 선택 안만 잘라 붙이기) ·
+캔버스 뒤집기/회전/크기/자르기/이미지 크기(모든 레이어, 실행취소 하나). GUI: 이미지 메뉴 + 보정 대화상자(실시간 미리보기 =
+undo→재적용이라 확인 뒤 실행취소 항목이 정확히 하나) + 곡선 편집기 + Ctrl+T 변형 모드(핸들·회전·화살표·옵션 바 숫자 입력).
+에이전트: `adjust` · `transform`(확대·회전 실제 지원) · `canvas`.

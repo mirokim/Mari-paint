@@ -36,6 +36,8 @@ set(MARI_UI_SOURCES
     popup_palette.cpp
     popup_palette.hpp
     tablet_dialog.cpp
+    adjust_dialog.cpp
+    adjust_dialog.hpp
     brush_preview.cpp
     brush_preview.hpp
     brush_panel.cpp
