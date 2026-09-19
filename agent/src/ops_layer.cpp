@@ -122,6 +122,11 @@ Result<Json> layerAdd(AgentSession& s, const Json& req) {
         return added.error();
     }
     const LayerId id = added.value()->id();
+    // 🔴 사람이 GUI 에서 "새 레이어" 를 누르면 그게 활성이 된다 — 에이전트도 같다(active:false 로 끈다).
+    //    실물 검증에서 이걸 안 해서 안개가 엉뚱한 층에 갔다.
+    if (req["active"].asBool(true) && kind != "group") {
+        (void)tree.setActiveLayer(id);
+    }
     if (req["role"].isString()) {
         const LayerRole role = layerRoleFromName(req["role"].asString());
         if (role == LayerRole::None) {
@@ -149,10 +154,13 @@ Result<Json> layerRemove(AgentSession& s, const Json& req) {
     }
     const LayerId id = l.value()->id();
     const Rect bounds = l.value()->bounds();
+    const bool wasActive = d.value()->layers().activeLayer() == id;
     const Result<void> r = d.value()->layers().remove(id);
     if (!r.ok()) {
         return r.error();
     }
+    if (wasActive && !d.value()->layers().roots().empty())
+        (void)d.value()->layers().setActiveLayer(d.value()->layers().roots().back()->id());
     s.roles().erase(id);
     d.value()->markDirty();
     s.noteDirty(bounds);
@@ -241,10 +249,12 @@ Result<Json> layerMerge(AgentSession& s, const Json& req) {
 
     const Rect area = upper.value()->bounds().united(lower->bounds());
     if (area.isEmpty()) {
+        const bool wasActive = doc->layers().activeLayer() == upper.value()->id();
         const Result<void> rm = doc->layers().remove(upper.value()->id());
         if (!rm.ok()) {
             return rm.error();
         }
+        if (wasActive) (void)doc->layers().setActiveLayer(lower->id());
         Json out = Json::object();
         out.set("merged", Json::integer(lower->id()));
         out.set("area", jsonRect(area));
@@ -270,10 +280,12 @@ Result<Json> layerMerge(AgentSession& s, const Json& req) {
         return w.error();
     }
     const LayerId gone = upper.value()->id();
+    const bool wasActive = doc->layers().activeLayer() == gone;
     const Result<void> rm = doc->layers().remove(gone);
     if (!rm.ok()) {
         return rm.error();
     }
+    if (wasActive) (void)doc->layers().setActiveLayer(lower->id()); // 합친 결과가 활성(GUI 와 같다)
     s.roles().erase(gone);
     doc->markDirty();
     s.noteDirty(area);

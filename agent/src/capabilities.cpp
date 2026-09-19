@@ -142,6 +142,7 @@ std::vector<OpSpec> makeTable() {
                        ViewMode::None,
                        {P{"name", "string", false, "이름. 없으면 자동"},
                         P{"kind", "string", false, "raster | group. 기본 raster"},
+                        P{"active", "bool", false, "새 래스터 레이어를 활성으로(기본 true). 이후 layer 를 안 준 그리기 연산이 여기로 간다"},
                         P{"parent", "layer", false, "부모 그룹. 없으면 루트"},
                         P{"index", "int", false, "형제 중 위치(0=가장 아래). 없으면 맨 위"},
                         P{"role", "string", false,
@@ -477,7 +478,7 @@ std::vector<OpSpec> makeTable() {
     // ── 시각 ─────────────────────────────────────────────────────────────
     t.push_back(OpSpec{"render",
                        "visual",
-                       "지금 캔버스를 이미지로 돌려준다(기본 view 는 full)",
+                       "지금 캔버스를 이미지로 돌려준다(기본 view 는 full, 긴 변 512px — view:{mode:\"full\",max:N} 으로 키운다)",
                        true,
                        "",
                        false,
