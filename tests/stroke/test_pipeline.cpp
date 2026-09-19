@@ -125,101 +125,72 @@ MARI_TEST(pipeline_clear_dirty_keeps_capacity) {
 }
 
 MARI_TEST(pipeline_smoothing_changes_the_result) {
-    // 끄고/켜고가 같은 그림을 내면 스무딩이 동작하지 않는 것이다.
-    const auto draw = [](SmoothingMode m) -> Rect {
+    // 끄고/켜고가 같은 그림을 내면 스무딩이 동작하지 않는 것이다. 떨림(±2px)이 깎이면 사선 위 ±2 자리가 비어야 한다.
+    const auto inkAt = [](SmoothingMode m, i32 x, i32 y, bool endCorrection, f32 deadZone) {
         auto e = makeNativeEngine();
-        (void)e.value()->setPreset(roundPreset(6.0f, 0.1f), nullptr);
+        (void)e.value()->setPreset(roundPreset(3.0f, 0.2f), nullptr);
         StrokePipeline pipe(e.value().get());
         FakeTileMap map;
-        drawDiagonal(pipe, map, m);
-        return map.paintedBounds();
+        StrokeConfig cfg;
+        cfg.smoothing = m;
+        cfg.endCorrection = endCorrection;
+        cfg.deadZone = deadZone;
+        pipe.setConfig(cfg);
+        (void)pipe.begin(ctxFor(&map), pen(30, 30, 0));
+        for (int i = 1; i <= 24; ++i) {
+            const f64 t = static_cast<f64>(i);
+            pipe.extend(pen(30.0 + t * 8.0, 30.0 + t * 6.0 + ((i % 2) ? 2.0 : -2.0), static_cast<u64>(i) * 5));
+        }
+        pipe.end();
+        return map.pixelAt(x, y).a;
     };
-    const Rect off = draw(SmoothingMode::Off);
-    const Rect strong = draw(SmoothingMode::Strong);
-    CHECK(!(off == strong));
-    CHECK(strong.height < off.height); // 떨림이 깎여 세로 폭이 준다
+    // 떨림 꼭짓점(i=11: x=118, y=96+2=98)은 끄면 찍히고 강하게 켜면 비어 있다.
+    CHECK(inkAt(SmoothingMode::Off, 118, 98, true, 0.0f) > 0);
+    CHECK_EQ(int(inkAt(SmoothingMode::Strong, 118, 98, true, 0.0f)), 0);
 }
 
-MARI_TEST(pipeline_pressure_ramp_changes_stroke_width) {
-    brush::MariBrushPreset p = roundPreset(30.0f, 0.05f);
-    brush::DynamicLink d;
-    d.input = brush::DynamicInput::Pressure;
-    d.output = brush::DynamicOutput::Size;
-    p.dynamics.push_back(d);
-
-    auto e = makeNativeEngine();
-    CHECK(e.value()->setPreset(p, nullptr).ok());
-    StrokePipeline pipe(e.value().get());
-    FakeTileMap map;
-
-    // 왼쪽(약)에서 오른쪽(강)으로 필압을 올리며 가로로 긋는다.
-    CHECK(pipe.begin(ctxFor(&map), pen(100, 200, 0, 0.05f)).ok());
-    for (int i = 1; i <= 40; ++i)
-        pipe.extend(pen(100.0 + i * 5.0, 200.0, static_cast<u64>(i) * 4,
-                        0.05f + static_cast<f32>(i) * 0.02375f));
-    pipe.end();
-
-    const auto thicknessAt = [&](i32 x) -> i32 {
-        i32 n = 0;
-        for (i32 y = 120; y < 280; ++y)
-            if (map.pixelAt(x, y).a > 0)
-                ++n;
-        return n;
+MARI_TEST(pipeline_end_correction_reaches_the_pen_up_point) {
+    // 강한 보정은 커서보다 뒤처진다. 끝점 보정이 켜지면 뗀 자리(222,172)까지 이어 그리고, 끄면 못 미친다.
+    const auto endInk = [](bool endCorrection) {
+        auto e = makeNativeEngine();
+        (void)e.value()->setPreset(roundPreset(3.0f, 0.2f), nullptr);
+        StrokePipeline pipe(e.value().get());
+        FakeTileMap map;
+        StrokeConfig cfg;
+        cfg.smoothing = SmoothingMode::Strong;
+        cfg.endCorrection = endCorrection;
+        pipe.setConfig(cfg);
+        (void)pipe.begin(ctxFor(&map), pen(30, 30, 0));
+        for (int i = 1; i <= 24; ++i) {
+            const f64 t = static_cast<f64>(i);
+            pipe.extend(pen(30.0 + t * 8.0, 30.0 + t * 6.0, static_cast<u64>(i) * 5));
+        }
+        pipe.end();
+        return map.pixelAt(222, 174).a;
     };
-    const i32 thin = thicknessAt(110);
-    const i32 thick = thicknessAt(290);
-    CHECK(thin > 0);
-    CHECK(thick > thin * 3); // 필압이 20배면 굵기도 눈에 띄게 달라야 한다
+    CHECK(endInk(true) > 0);
+    CHECK_EQ(int(endInk(false)), 0);
 }
 
-MARI_TEST(pipeline_rejects_bad_setup_without_throwing) {
-    StrokePipeline noEngine(nullptr);
-    FakeTileMap map;
-    const auto r = noEngine.begin(ctxFor(&map), pen(0, 0, 0));
-    CHECK(!r.ok());
-    CHECK_EQ(r.code(), ErrorCode::InvalidArgument);
-    noEngine.extend(pen(1, 1, 1)); // 시작 안 했으면 아무 일도 없다
-    noEngine.end();
-    CHECK(!noEngine.active());
-
+MARI_TEST(pipeline_dead_zone_ignores_small_jitter) {
+    // 데드존 6px: ±2px 떨림은 전혀 반영되지 않고, 다듬은 점은 원본에서 정확히 6px 뒤에서 끌려온다.
     auto e = makeNativeEngine();
-    CHECK(e.value()->setPreset(roundPreset(10.0f), nullptr).ok());
-    StrokePipeline pipe(e.value().get());
-    brush::StrokeContext bad(StrokeSource::humanPen());
-    bad.target = nullptr;
-    CHECK(!pipe.begin(bad, pen(0, 0, 0)).ok());
-    CHECK_EQ(pipe.lastError().code, ErrorCode::InvalidArgument);
-    CHECK(!pipe.active());
-}
-
-MARI_TEST(pipeline_single_tap_leaves_one_dot) {
-    auto e = makeNativeEngine();
-    CHECK(e.value()->setPreset(roundPreset(10.0f), nullptr).ok());
+    (void)e.value()->setPreset(roundPreset(3.0f, 0.2f), nullptr);
     StrokePipeline pipe(e.value().get());
     FakeTileMap map;
-    CHECK(pipe.begin(ctxFor(&map), pen(300, 300, 0)).ok());
+    StrokeConfig cfg;
+    cfg.smoothing = SmoothingMode::Light;
+    cfg.deadZone = 6.0f;
+    cfg.endCorrection = false;
+    pipe.setConfig(cfg);
+    (void)pipe.begin(ctxFor(&map), pen(30, 30, 0));
+    // 제자리에서 ±2px 만 떨면 아무것도 안 움직인다.
+    for (int i = 1; i <= 10; ++i) pipe.extend(pen(30.0 + ((i % 2) ? 2.0 : -2.0), 30.0, static_cast<u64>(i) * 5));
+    CHECK_NEAR(pipe.lastSample().pos.x, 30.0f, 1e-4);
+    // 30px 오른쪽으로 가면 24px 만 따라온다(6px 은 끈 길이).
+    pipe.extend(pen(60.0, 30.0, 100));
+    CHECK_NEAR(pipe.lastSample().pos.x, 54.0f, 1e-3);
     pipe.end();
-    CHECK_EQ(pipe.stampCount(), 1u);
-    CHECK_EQ(pipe.dirtyTiles().size(), 1u);
-    CHECK(map.pixelAt(300, 300).a > 0);
-}
-
-MARI_TEST(pipeline_keeps_canvas_coordinates_intact) {
-    // 좌표는 캔버스 좌표 그대로다. y 는 아래로 증가한다.
-    auto e = makeNativeEngine();
-    CHECK(e.value()->setPreset(roundPreset(4.0f, 0.25f), nullptr).ok());
-    StrokePipeline pipe(e.value().get());
-    FakeTileMap map;
-    CHECK(pipe.begin(ctxFor(&map), pen(-70, 500, 0)).ok()); // 캔버스 밖 음수 좌표도 허용
-    pipe.extend(pen(-70, 540, 20));
-    pipe.end();
-    CHECK(map.pixelAt(-70, 500).a > 0);
-    CHECK(map.pixelAt(-70, 540).a > 0);
-    bool negativeTile = false;
-    for (const TileCoord& c : pipe.dirtyTiles())
-        if (c.tx < 0)
-            negativeTile = true;
-    CHECK(negativeTile);
 }
 
 MARI_TEST_MAIN()

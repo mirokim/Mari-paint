@@ -56,9 +56,22 @@ public:
     /// 한 샘플을 다듬는다. Off 면 **비트 단위로 같은 값**을 그대로 돌려준다.
     [[nodiscard]] InputSample smooth(const InputSample& s) noexcept;
 
+    /// 데드존(캔버스 px). 0 = 없음. 다듬은 점은 원본이 이 반지름 밖으로 나가야만 끌려간다
+    /// ("끈에 매단 펜" — CSP 후보정·Krita stabilizer 의 방식). 느린 떨림을 완전히 죽인다.
+    void setDeadZone(f32 px) noexcept { deadZone_ = px < 0.0f ? 0.0f : px; }
+    [[nodiscard]] f32 deadZone() const noexcept { return deadZone_; }
+
+    /// 끝점 보정: 펜을 뗀 자리(마지막 원본)까지 다듬은 점이 못 따라온 거리. 0 이면 보정할 게 없다.
+    [[nodiscard]] f32 lagPx() const noexcept;
+    /// 끝점 보정용: 다듬은 점을 마지막 원본 쪽으로 t(0..1) 만큼 옮긴 샘플을 준다(필압·시간은 마지막 원본 것).
+    [[nodiscard]] InputSample catchUp(f32 t) const noexcept;
+    [[nodiscard]] const InputSample& lastRaw() const noexcept { return lastRaw_; }
+
 private:
     SmoothingMode mode_ = SmoothingMode::Off;
     InputSample state_{};
+    InputSample lastRaw_{};
+    f32 deadZone_ = 0.0f;
     bool started_ = false;
 };
 

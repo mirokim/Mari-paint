@@ -380,6 +380,8 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
     pipe_ns::StrokePipeline pipe(engine.value().get());
     pipe_ns::StrokeConfig cfg;
     cfg.smoothing = smoothingFromNumber(req["smoothing"].asNumber(0.0));
+    cfg.deadZone = static_cast<f32>(std::clamp(req["deadZone"].asNumber(0.0), 0.0, 200.0));
+    cfg.endCorrection = req["endCorrection"].asBool(true);
     pipe.setConfig(cfg);
 
     // 실행취소는 칠하기 **전에** 담는다(core/undo.hpp 규약).

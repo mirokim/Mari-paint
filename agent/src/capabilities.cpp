@@ -257,6 +257,8 @@ std::vector<OpSpec> makeTable() {
                 P{"spacing", "number", false, "스탬프 간격(지름 대비 비율)"},
                 P{"opacity", "number", false, "0..1"},
                 P{"smoothing", "number", false, "떨림 보정 0..1. 기본 0(끔)"},
+                P{"deadZone", "number", false, "데드존(캔버스 px, 끈에 매단 펜). 보정이 켜졌을 때만. 기본 0"},
+                P{"endCorrection", "bool", false, "펜을 뗀 자리까지 이어 그린다. 기본 true"},
                 P{"pressureProfile", "string", false,
                   "flat|taper-in|taper-out|taper-in-out|pulse. p 가 없는 점에 적용"},
                 P{"eraser", "bool", false, "지우개 모드"},

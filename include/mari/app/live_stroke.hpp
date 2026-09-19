@@ -50,6 +50,8 @@ struct LiveStrokeConfig {
     bool eraser = false;
     u64 seed = 0;
     stroke::SmoothingMode smoothing = stroke::SmoothingMode::Off;
+    f32 deadZone = 0.0f;        ///< 캔버스 px. 보정이 켜졌을 때만
+    bool endCorrection = true;  ///< 펜을 뗀 자리까지 이어 그린다
     std::string undoText = "획";
 };
 

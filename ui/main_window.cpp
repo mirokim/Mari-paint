@@ -463,6 +463,15 @@ void MainWindow::buildToolbars() {
     smoothingCombo_ = new QComboBox(optionsBar_);
     smoothingCombo_->addItems({"끔", "약함", "보통", "강함"});
     optionsBar_->addWidget(smoothingCombo_);
+    optionsBar_->addWidget(new QLabel("데드존"));
+    deadZoneSpin_ = new QSpinBox(optionsBar_);
+    deadZoneSpin_->setRange(0, 40);
+    deadZoneSpin_->setSuffix(" px");
+    deadZoneSpin_->setFixedWidth(64);
+    deadZoneSpin_->setToolTip("끈에 매단 펜: 커서가 이 반지름(화면 px)을 벗어나야 선이 따라온다. 느린 떨림을 없앤다. 보정이 켜졌을 때만.");
+    deadZoneSpin_->setValue(QSettings().value("stabilizer/deadZone", 0).toInt());
+    connect(deadZoneSpin_, &QSpinBox::valueChanged, this, [](int v) { QSettings().setValue("stabilizer/deadZone", v); });
+    optionsBar_->addWidget(deadZoneSpin_);
 
     // 마술봉·페인트통 옵션(해당 도구일 때만 보인다)
     floodOptions_ = new QWidget(optionsBar_);
@@ -765,6 +774,10 @@ app::LiveStrokeConfig MainWindow::strokeConfig() const {
     case 3: cfg.smoothing = stroke::SmoothingMode::Strong; break;
     default: cfg.smoothing = stroke::SmoothingMode::Off; break;
     }
+    // 데드존은 화면 px 로 고른다(줌과 무관한 손 느낌) → 캔버스 px 로.
+    const f64 zoom = std::max(canvas_->viewState().zoom, 1e-3);
+    cfg.deadZone = static_cast<f32>(deadZoneSpin_->value() * canvas_->devicePixelRatioF() / zoom);
+    cfg.endCorrection = true;
     return cfg;
 }
 

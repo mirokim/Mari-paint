@@ -21,6 +21,8 @@ void StrokePipeline::setConfig(const StrokeConfig& c) noexcept {
     norm_.setConfig(c.normalize);
     interp_.setConfig(c.interpolate);
     smoother_.setMode(c.smoothing);
+    smoother_.setDeadZone(c.deadZone);
+    endCorrection_ = c.endCorrection;
 }
 
 Result<void> StrokePipeline::begin(const brush::StrokeContext& ctx, const RawInputEvent& e) {
@@ -76,6 +78,19 @@ void StrokePipeline::end(const RawInputEvent& e) noexcept {
 void StrokePipeline::end() noexcept {
     if (!active_)
         return;
+    // 끝점 보정: 다듬은 점이 펜을 뗀 자리에 못 미쳤으면 거기까지 이어 그린다(직선, 뗄 때 필압).
+    if (endCorrection_ && smoother_.enabled()) {
+        const f32 lag = smoother_.lagPx();
+        if (lag > 0.5f) {
+            Sink sink(engine_, dirty_);
+            const int steps = static_cast<int>(std::min(32.0f, std::max(2.0f, lag / 2.0f)));
+            for (int i = 1; i <= steps; ++i) {
+                const InputSample s = smoother_.catchUp(static_cast<f32>(i) / static_cast<f32>(steps));
+                interp_.push(s, *engine_, sink);
+                last_ = s;
+            }
+        }
+    }
     engine_->endStroke(dirty_);
     interp_.finish();
     active_ = false;

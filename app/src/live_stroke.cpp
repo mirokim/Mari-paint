@@ -108,6 +108,8 @@ Result<std::unique_ptr<LiveStroke>> LiveStroke::begin(Document& doc, const Strok
     s->pipe_ = std::make_unique<stroke::StrokePipeline>(s->engine_.get());
     stroke::StrokeConfig pc;
     pc.smoothing = cfg.smoothing;
+    pc.deadZone = cfg.deadZone;
+    pc.endCorrection = cfg.endCorrection;
     s->pipe_->setConfig(pc);
 
     // 실행취소는 칠하기 **전에** 담는다(core/undo.hpp 규약).

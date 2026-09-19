@@ -27,6 +27,10 @@ struct StrokeConfig {
     InterpolateConfig interpolate{};
     /// 떨림 보정 강도. 기본은 **끔** — 선 느낌을 말없이 바꾸지 않는다.
     SmoothingMode smoothing = SmoothingMode::Off;
+    /// 데드존(캔버스 px). 보정이 켜졌을 때만 의미 있다. 0 = 없음.
+    f32 deadZone = 0.0f;
+    /// 끝점 보정: 펜을 뗄 때 다듬은 점을 뗀 자리까지 끌어다 마무리한다(보정이 켜졌을 때만).
+    bool endCorrection = true;
     /// begin() 에서 미리 잡아 둘 더티 타일 칸 수. 핫 패스 할당을 없애기 위한 예산이다.
     usize dirtyReserve = 512;
 };
@@ -82,6 +86,7 @@ private:
     StrokeConfig cfg_{};
     InputNormalizer norm_{};
     Smoother smoother_{};
+    bool endCorrection_ = true;
     StrokeInterpolator interp_{};
     DirtyTiles dirty_{};
     InputSample last_{};

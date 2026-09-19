@@ -131,6 +131,7 @@ private:
     QSlider* opacitySlider_ = nullptr;
     QSpinBox* opacitySpin_ = nullptr;
     QComboBox* smoothingCombo_ = nullptr;
+    QSpinBox* deadZoneSpin_ = nullptr;
     QWidget* floodOptions_ = nullptr;
     QWidget* transformOptions_ = nullptr;
     QDoubleSpinBox* xfDx_ = nullptr;
