@@ -29,6 +29,7 @@ std::vector<MariBrushPreset> builtinPresets() {
     add("연필", 6.0f, 0.85f, 0.08f, 0.9f, true);
     add("잉크펜", 10.0f, 1.0f, 0.06f, 1.0f, true);
     add("에어브러시", 48.0f, 0.15f, 0.05f, 0.35f, true);
+    out.back().airbrush = true; // 머물면 쌓인다(GUI 30ms 타이머 · 에이전트 t 간격)
     add("납작붓", 28.0f, 0.6f, 0.12f, 1.0f, false);
     return out;
 }

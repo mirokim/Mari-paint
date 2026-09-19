@@ -245,6 +245,7 @@ private:
     QColor bgColor_ = Qt::white;
     bool shapeDrag_ = false;
     QPointF shapeStart_, shapeCur_;
+    std::vector<int> mirrorAxes_; ///< mirrors_[i] 가 어느 축인지(1·2·3)
     std::vector<std::unique_ptr<app::LiveStroke>> mirrors_; ///< 대칭 획(축 1·2·3 → 최대 3개)
     QTimer* airbrushTimer_ = nullptr; ///< 에어브러시: 펜이 멈춰 있어도 쌓인다
     u64 lastMoveNs_ = 0;
@@ -253,6 +254,7 @@ private:
     // 자유 변형 상태
     struct Transforming {
         bool active = false;
+        LayerId layer = kInvalidLayerId; ///< 잘라 낸 레이어 — 적용 때 활성 레이어가 바뀌어 있어도 이 레이어에 한다
         Rect S{};              ///< 원본 내용 영역(캔버스)
         QImage img;            ///< 잘라 낸 픽셀(straight RGBA → ARGB32 premultiplied)
         f64 dx = 0, dy = 0, sx = 1, sy = 1, rot = 0;
@@ -262,6 +264,8 @@ private:
         QPointF dragStart;     ///< 캔버스 좌표
         f64 startDx = 0, startDy = 0, startSx = 1, startSy = 1, startRot = 0, startAngle = 0;
     } xf_;
+    static constexpr const char* kTransformPrepareText = "변형 준비";
+    void undoPrepare(); ///< 스택 맨 위가 "변형 준비" 일 때만 되돌린다
     [[nodiscard]] QTransform transformMatrixCanvas() const; ///< 원본 캔버스 좌표 → 결과 캔버스 좌표
     [[nodiscard]] int transformHitTest(const QPointF& logicalPos) const;
     void paintTransform(QPainter& p);

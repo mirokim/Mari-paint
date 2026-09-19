@@ -208,4 +208,19 @@ MARI_TEST(canvas_flip_rotate_resize_crop_scale_with_single_undo) {
     CHECK_EQ(hashNow(*doc), before.value());
 }
 
+MARI_TEST(canvas_ops_carry_locked_layers_too) {
+    // 잠긴 레이어를 건너뛰면 자르기 뒤 그 레이어만 옛 좌표에 남아 어긋난다 — 같이 간다.
+    auto doc = makeDoc(40, 20);
+    CHECK(doc != nullptr);
+    const LayerId id = doc->layers().activeLayer();
+    fillRect(*doc, id, Rect{10, 0, 10, 20}, Color8::rgba(0, 0, 255));
+    doc->layers().find(id)->setLocked(true);
+    const Result<std::string> before = doc->canvasHash();
+    CHECK(cropCanvas(*doc, kSrc, Rect{10, 0, 20, 20}).ok());
+    CHECK_EQ(pixel(*doc, 2, 5).b, u8{255});  // 띠가 x=0..9 로 따라왔다
+    CHECK_EQ(pixel(*doc, 15, 5).a, u8{0});
+    CHECK(doc->undo().ok());
+    CHECK_EQ(hashNow(*doc), before.value());
+}
+
 MARI_TEST_MAIN()

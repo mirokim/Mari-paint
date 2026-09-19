@@ -117,6 +117,14 @@ void UndoStack::push(UndoCommandPtr cmd) {
         undo_.erase(undo_.begin());
 }
 
+UndoCommandPtr UndoStack::takeLast() {
+    if (undo_.empty())
+        return nullptr;
+    UndoCommandPtr c = std::move(undo_.back());
+    undo_.pop_back();
+    return c;
+}
+
 const std::string& UndoStack::undoText() const {
     return undo_.empty() ? emptyText() : undo_.back()->text();
 }

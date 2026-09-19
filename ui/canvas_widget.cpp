@@ -4,6 +4,7 @@
 
 #include <mari/core/compositor.hpp>
 #include <mari/core/origin.hpp>
+#include <mari/core/undo.hpp>
 #include <mari/stroke/input.hpp>
 
 #include <QCoreApplication>
@@ -144,6 +145,15 @@ void CanvasWidget::invalidateCanvas(const Rect& canvasRect) {
         return;
     }
     const Size sz = doc_->canvasSize();
+    // 캔버스 크기가 바뀌었으면(캔버스 연산·그 실행취소) 백킹을 새로 잡는다 — 뷰(줌·위치)는 건드리지 않는다.
+    if (backing_.width() != sz.width || backing_.height() != sz.height) {
+        backing_ = QImage(sz.width, sz.height, QImage::Format_ARGB32_Premultiplied);
+        backing_.fill(Qt::transparent);
+        pendingComposite_ = Rect{0, 0, sz.width, sz.height};
+        rebuildSelectionOutline();
+        invalidateView(); // 캔버스 테두리 자체가 바뀌었다 — 뷰 캐시 전체를 다시
+        return;
+    }
     const Rect r = canvasRect.isEmpty() ? Rect{0, 0, sz.width, sz.height} : canvasRect;
     scheduleCanvasRepaint(r, 0);
 }
@@ -524,6 +534,7 @@ void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
     if (live_->airbrush()) airbrushTimer_->start();
     // 대칭: 축마다 획을 하나 더 시작한다(같은 설정, 다른 시드). 각각 따로 기록·실행취소된다.
     mirrors_.clear();
+    mirrorAxes_.clear();
     if (symmetry_ != 0) {
         for (int axis : {1, 2, 3}) {
             // 1 세로축 · 2 가로축 · 3 둘 다(점대칭). 둘 다 켜면 세 획이 더 생긴다.
@@ -534,6 +545,7 @@ void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
                 *doc_, StrokeSource::humanPen(), doc_->layers().activeLayer(), mc, mirrored(first, axis));
             if (mb.ok()) {
                 mirrors_.push_back(std::move(mb).value());
+                mirrorAxes_.push_back(axis); // 시작에 실패한 축은 빠진다 — 인덱스를 축으로 짝지어 둔다
                 scheduleCanvasRepaint(mirrors_.back()->takeDisplayDirty(), s.event.timestampNs);
             }
         }
@@ -548,15 +560,9 @@ void CanvasWidget::onPointerMove(const mari::win::PointerSample& s) {
     live_->extend(e);
     lastMoveNs_ = stroke::monotonicNowNs();
     scheduleCanvasRepaint(live_->takeDisplayDirty(), e.timestampNs);
-    if (!mirrors_.empty()) {
-        int idx = 0;
-        for (int axis : {1, 2, 3}) {
-            if (axis == 3 ? symmetry_ != 3 : (symmetry_ & axis) == 0) continue;
-            if (static_cast<usize>(idx) >= mirrors_.size()) break;
-            mirrors_[static_cast<usize>(idx)]->extend(mirrored(e, axis));
-            scheduleCanvasRepaint(mirrors_[static_cast<usize>(idx)]->takeDisplayDirty(), e.timestampNs);
-            ++idx;
-        }
+    for (usize i = 0; i < mirrors_.size(); ++i) {
+        mirrors_[i]->extend(mirrored(e, mirrorAxes_[i]));
+        scheduleCanvasRepaint(mirrors_[i]->takeDisplayDirty(), e.timestampNs);
     }
 }
 
@@ -576,25 +582,35 @@ void CanvasWidget::finishStroke(const stroke::RawInputEvent* last) {
     }
     const u64 inputNs = last != nullptr ? last->timestampNs : 0;
     const u64 t0 = stroke::monotonicNowNs();
-    // 대칭 획 먼저 마무리(결과는 주 획으로만 보고한다 — 실행취소는 각각 남는다).
-    if (!mirrors_.empty()) {
-        int idx = 0;
-        for (int axis : {1, 2, 3}) {
-            if (axis == 3 ? symmetry_ != 3 : (symmetry_ & axis) == 0) continue;
-            if (static_cast<usize>(idx) >= mirrors_.size()) break;
-            std::unique_ptr<app::LiveStroke>& m = mirrors_[static_cast<usize>(idx)];
-            if (last != nullptr) {
-                const stroke::RawInputEvent me = mirrored(*last, axis);
-                (void)m->end(&me);
-            } else {
-                (void)m->end(nullptr);
-            }
-            scheduleCanvasRepaint(m->takeDisplayDirty(), 0);
-            ++idx;
+    // 대칭 획 먼저 마무리(결과는 주 획으로만 보고한다). 실행취소는 아래에서 하나로 묶는다.
+    const usize undoBefore = doc_ != nullptr ? doc_->undoStack().undoCount() : 0;
+    const bool hadMirrors = !mirrors_.empty();
+    for (usize i = 0; i < mirrors_.size(); ++i) {
+        std::unique_ptr<app::LiveStroke>& m = mirrors_[i];
+        if (last != nullptr) {
+            const stroke::RawInputEvent me = mirrored(*last, mirrorAxes_[i]);
+            (void)m->end(&me);
+        } else {
+            (void)m->end(nullptr);
         }
-        mirrors_.clear();
+        scheduleCanvasRepaint(m->takeDisplayDirty(), 0);
     }
+    mirrors_.clear();
+    mirrorAxes_.clear();
     Result<app::LiveStrokeOutcome> ended = live_->end(last);
+    // 🔴 같은 레이어에 동시에 달린 획들은 타일 스냅샷이 서로의 잉크를 물고 있다 — 따로 되돌리면 뒤섞인다.
+    //    한 항목으로 묶으면 되돌리기/다시하기가 반드시 시작 전/끝난 뒤 상태로만 간다.
+    if (hadMirrors && doc_ != nullptr) {
+        UndoStack& st = doc_->undoStack();
+        const usize pushed = st.undoCount() > undoBefore ? st.undoCount() - undoBefore : 0;
+        if (pushed > 1) {
+            std::vector<UndoCommandPtr> taken;
+            for (usize i = 0; i < pushed; ++i) taken.push_back(st.takeLast());
+            auto compound = std::make_unique<CompoundCommand>("붓질(대칭)");
+            for (auto it = taken.rbegin(); it != taken.rend(); ++it) compound->add(std::move(*it));
+            st.push(std::move(compound));
+        }
+    }
     if (traceOn()) {
         std::fprintf(stderr, "[mari-gui] LiveStroke::end %.2f ms\n",
                      static_cast<f64>(stroke::monotonicNowNs() - t0) / 1e6);
@@ -1093,9 +1109,10 @@ bool CanvasWidget::beginTransform() {
     }
     // 잘라 낸 자리를 비운다(실행취소 항목 하나 — 적용/취소 때 되돌린다).
     ora::Image8 remain = app::remainderForTransform(*doc_, lid, S);
-    if (!doc_->paintPixels(lid, S, remain.pixels.data(), remain.pixels.size(), "변형 준비").ok()) return false;
+    if (!doc_->paintPixels(lid, S, remain.pixels.data(), remain.pixels.size(), kTransformPrepareText).ok()) return false;
     xf_ = Transforming{};
     xf_.active = true;
+    xf_.layer = lid;
     xf_.S = S;
     QImage img(ex.value().pixels.data(), S.width, S.height, static_cast<int>(ex.value().stride()), QImage::Format_RGBA8888);
     xf_.img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -1181,14 +1198,14 @@ void CanvasWidget::transformFlip(bool horizontal) {
 
 void CanvasWidget::commitTransform() {
     if (!xf_.active || doc_ == nullptr) return;
-    const LayerId lid = doc_->layers().activeLayer();
+    const LayerId lid = xf_.layer;
     app::TransformParams tp;
     tp.dx = xf_.dx; tp.dy = xf_.dy; tp.scaleX = xf_.sx; tp.scaleY = xf_.sy; tp.rotateDeg = xf_.rot;
     tp.flipH = xf_.flipH; tp.flipV = xf_.flipV;
     tp.usePivot = true; tp.pivotX = xf_.px; tp.pivotY = xf_.py;
     const Rect S = xf_.S;
     xf_ = Transforming{};
-    (void)doc_->undo(); // "변형 준비" 되돌리기 — 원본을 다시 놓고 진짜 변형을 한 번에 한다
+    undoPrepare(); // "변형 준비" 되돌리기 — 원본을 다시 놓고 진짜 변형을 한 번에 한다
     const Result<Rect> r = app::transformLayer(*doc_, StrokeSource::humanPen(), lid, tp);
     if (!r.ok()) Q_EMIT strokeRefused(QString::fromStdString(r.message()));
     invalidateCanvas();
@@ -1199,10 +1216,16 @@ void CanvasWidget::commitTransform() {
     (void)S;
 }
 
+void CanvasWidget::undoPrepare() {
+    // 🔴 스택 맨 위가 정말 "변형 준비" 일 때만 되돌린다. 다른 항목이면(누가 그 사이 스택을 움직였다) 손대지 않는다 —
+    //    잘라 낸 자리는 비어 있겠지만, 남의 붓질을 지우는 것보다 낫다.
+    if (doc_->undoStack().undoText() == kTransformPrepareText) (void)doc_->undo();
+}
+
 void CanvasWidget::cancelTransform() {
     if (!xf_.active || doc_ == nullptr) return;
     xf_ = Transforming{};
-    (void)doc_->undo();
+    undoPrepare();
     invalidateCanvas();
     setCursor(Qt::ArrowCursor);
     emitTransformChanged();

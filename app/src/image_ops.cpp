@@ -572,14 +572,21 @@ Result<void> rewriteAllLayers(Document& doc, const StrokeSource& src, const char
     std::vector<Done> done;
     const Rect srcRect{0, 0, before.width, before.height};
     const Rect dstRect{0, 0, after.width, after.height};
+    // 중간에 실패하면 이미 고쳐 쓴 레이어를 되돌린다 — 반쯤 바뀐 문서를 남기지 않는다.
+    const auto bail = [&](const Error& e) -> Result<void> {
+        const Result<void> un = compound->undo();
+        if (!un.ok())
+            return Err(e.message + " (되돌리기도 실패: " + un.message() + ")", ErrorCode::IoError);
+        return e;
+    };
+    // 🔴 잠긴 레이어도 같이 간다 — 캔버스 연산은 좌표계 자체를 바꾸므로 건너뛰면 그 레이어만 어긋난다(포토샵도 같다).
     for (const LayerPtr& l : layers) {
-        if (l->locked()) continue;
         Result<ora::Image8> had = ora::readRegion(*l->tiles(), srcRect);
-        if (!had.ok()) return had.error();
+        if (!had.ok()) return bail(had.error());
         ora::Image8 img = fn(had.value());
         u32 changed = 0;
         Result<std::unique_ptr<TileSnapshotCommand>> cmd = writeLayerRegion(*l, dstRect, img, text, changed);
-        if (!cmd.ok()) return cmd.error();
+        if (!cmd.ok()) return bail(cmd.error());
         compound->add(std::move(cmd).value());
         done.push_back({l->id(), dstRect.united(srcRect), changed});
     }

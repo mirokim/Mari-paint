@@ -909,7 +909,8 @@ void MainWindow::stepOpacity(int direction) {
 
 void MainWindow::undo() {
     app::Document* doc = activeDocument();
-    if (doc == nullptr || canvas_->strokeActive()) return;
+    // 🔴 변형 중에는 막는다 — 적용/취소가 "변형 준비" 항목을 되돌리는데, 그 사이에 스택이 움직이면 엉뚱한 걸 되돌린다.
+    if (doc == nullptr || canvas_->strokeActive() || canvas_->transformActive()) return;
     const Result<void> r = doc->undo();
     if (!r.ok()) statusBar()->showMessage(QString::fromStdString(r.message()), 3000);
     canvas_->invalidateCanvas();
@@ -920,7 +921,7 @@ void MainWindow::undo() {
 
 void MainWindow::redo() {
     app::Document* doc = activeDocument();
-    if (doc == nullptr || canvas_->strokeActive()) return;
+    if (doc == nullptr || canvas_->strokeActive() || canvas_->transformActive()) return;
     const Result<void> r = doc->redo();
     if (!r.ok()) statusBar()->showMessage(QString::fromStdString(r.message()), 3000);
     canvas_->invalidateCanvas();
@@ -1032,6 +1033,7 @@ void MainWindow::importBrushes() {
             presets = std::move(r.value().presets);
         }
         for (brush::MariBrushPreset& p : presets) {
+            (void)agent::removePresetFile(brushDir_, p.name); // 같은 이름은 덮어쓴다 — 두 번 가져와도 하나
             const Result<void> w = agent::savePresetFile(agent::presetFilePath(brushDir_, p.name), p);
             if (!w.ok()) notes.push_back("저장 실패: " + w.message());
             else names.push_back(p.name);
@@ -1339,9 +1341,11 @@ void MainWindow::checkRecovery() {
     }
     attachDocument(static_cast<app::Document*>(opened.value()));
     recovered_ = true;
-    // 복구본은 열자마자 제거한다 — 사용자가 저장하면 진짜 파일이 되고, 다시 자동 저장이 돈다.
-    QFile::remove(base + ".ora");
-    QFile::remove(base + ".json");
+    // 복구본은 지우지 않고 이 세션의 자동 저장본으로 이어받는다 — 다음 자동 저장 전에 또 죽어도 남는다.
+    // 사용자가 제대로 저장하거나 닫으면 clearAutosave() 가 치운다.
+    const QString mine = QDir(autosaveDir()).filePath(autosaveId_);
+    if (!QFile::rename(base + ".ora", mine + ".ora")) QFile::remove(base + ".ora");
+    if (!QFile::rename(base + ".json", mine + ".json")) QFile::remove(base + ".json");
     markAutosaveDirty();
     statusBar()->showMessage("자동 저장본에서 복구했다 — Ctrl+S 로 저장 위치를 정해라", 8000);
 }

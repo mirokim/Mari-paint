@@ -69,7 +69,8 @@ public:
     void clearDirty() noexcept;
 
     /// 지금까지 찍은 스탬프 수(벤치마크·회귀 감시용).
-    [[nodiscard]] usize stampCount() const noexcept { return interp_.emitted(); }
+    /// 찍은 스탬프 수 — 보간기가 낸 것 + 머무르기(holdStamp)로 더 찍은 것.
+    [[nodiscard]] usize stampCount() const noexcept { return interp_.emitted() + holds_; }
     /// 이번 스트로크의 출처. begin() 이 성공해야 채워진다.
     /// 🔴 읽기 전용이다 — 파이프라인에는 출처를 **바꾸는 API 가 없다**(docs/05 3.1).
     ///    Sigan 발행기가 이 값을 그대로 StrokeSample 에 실어 프레임으로 내보낸다.
@@ -95,6 +96,7 @@ private:
     std::optional<StrokeSource> source_{}; ///< 이번 스트로크의 출처. 기본값은 "없음"이다
     Error lastError_{};
     bool active_ = false;
+    usize holds_ = 0; ///< holdStamp 로 찍은 수
     bool dirtyClean_ = true; ///< dirty_ 가 정렬·중복제거된 상태인가
 };
 

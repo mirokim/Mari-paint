@@ -229,6 +229,14 @@ struct LayerRec {
     u8 mDefault = 0;
 };
 
+/// 레이어/마스크 사각형이 말이 되는가: 좌표 ±kMaxDim 안, 너비·높이 kMaxDim 이하(음수는 빈 것으로 본다).
+constexpr i32 kMaxDim = 30000;
+bool rectSane(i32 top, i32 left, i32 bottom, i32 right) noexcept {
+    if (top < -kMaxDim || left < -kMaxDim || bottom > 2 * kMaxDim || right > 2 * kMaxDim) return false;
+    const i64 w = static_cast<i64>(right) - left, h = static_cast<i64>(bottom) - top;
+    return w <= kMaxDim && h <= kMaxDim;
+}
+
 } // namespace
 
 const char* blendKeyOf(BlendMode m) noexcept {
@@ -282,6 +290,9 @@ Result<Document> loadFromMemory(const u8* data, usize size) {
             for (usize i = 0; i < n && !r.failed(); ++i) {
                 LayerRec L;
                 L.top = r.i32v(); L.left = r.i32v(); L.bottom = r.i32v(); L.right = r.i32v();
+                // 🔴 손상된 파일이 w×h 를 수십 GB 로 만들 수 있다 — 캔버스와 같은 한도로 자른다(bad_alloc 대신 Err).
+                if (!rectSane(L.top, L.left, L.bottom, L.right))
+                    return Err("레이어 사각형이 범위 밖이다(손상된 PSD)", ErrorCode::ParseError);
                 const u16 nch = r.rd16();
                 for (u16 c = 0; c < nch; ++c) {
                     LayerRec::Chan ch;
@@ -305,6 +316,8 @@ Result<Document> loadFromMemory(const u8* data, usize size) {
                     const usize mEnd = r.pos() + maskLen;
                     L.hasMask = true;
                     L.mTop = r.i32v(); L.mLeft = r.i32v(); L.mBottom = r.i32v(); L.mRight = r.i32v();
+                    if (!rectSane(L.mTop, L.mLeft, L.mBottom, L.mRight))
+                        return Err("레이어 마스크 사각형이 범위 밖이다(손상된 PSD)", ErrorCode::ParseError);
                     L.mDefault = r.u8v();
                     r.seek(mEnd);
                 } else {

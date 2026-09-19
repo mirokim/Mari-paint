@@ -408,9 +408,15 @@ Result<Json> layerUngroup(AgentSession& s, const Json& req) {
         ids.push(Json::integer(kids[i]->id()));
     }
     const LayerId gone = g.value()->id();
+    const bool wasActive = doc->layers().activeLayer() == gone;
     const Result<void> rm = doc->layers().remove(gone);
     if (!rm.ok()) {
         return rm.error();
+    }
+    // 활성이던 그룹이 사라졌으면 맨 위 자식(없으면 맨 위 루트)이 활성 — GUI 의 그룹 풀기와 같다.
+    if (wasActive) {
+        if (!kids.empty()) (void)doc->layers().setActiveLayer(kids.back()->id());
+        else if (!doc->layers().roots().empty()) (void)doc->layers().setActiveLayer(doc->layers().roots().back()->id());
     }
     s.roles().erase(gone);
     doc->markDirty();
@@ -804,6 +810,8 @@ Result<Json> brushImport(AgentSession& s, const Json& req) {
     Json arr = Json::array();
     for (auto& p : imported.value().presets) {
         if (persist) {
+            // 같은 이름의 사용자 브러시는 덮어쓴다 — 같은 파일을 두 번 가져와도 라이브러리가 둘로 불지 않는다.
+            (void)removePresetFile(s.brushDir(), p.name);
             const std::string file = presetFilePath(s.brushDir(), p.name);
             const Result<void> w = savePresetFile(file, p);
             if (!w.ok()) {
@@ -812,7 +820,18 @@ Result<Json> brushImport(AgentSession& s, const Json& req) {
                 saved.push(Json::string(file));
             }
         }
-        const BrushId id = s.addBrush(std::move(p), src, notes);
+        BrushId id = kInvalidBrushId;
+        for (const BrushEntry& b : s.brushes()) {
+            if (b.source != "builtin" && b.preset.name == p.name) {
+                id = b.id;
+                break;
+            }
+        }
+        if (id != kInvalidBrushId) {
+            (void)s.updateBrush(id, p);
+        } else {
+            id = s.addBrush(std::move(p), src, notes);
+        }
         for (const BrushEntry& b : s.brushes()) {
             if (b.id == id) {
                 arr.push(brushToJson(b, false));

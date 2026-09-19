@@ -444,17 +444,22 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
         return begun.error();
     }
     entry.down(sampleNow());
-    for (usize i = 1; i + 1 < pts.size(); ++i) {
-        // 에어브러시: 같은 자리에 머문 시간(t 차이)만큼 30ms 마다 한 번 더 찍는다 — GUI 의 hold 와 같은 규칙.
+    // 에어브러시: 같은 자리에 머문 시간(t 차이)만큼 30ms 마다 한 번 더 찍는다 — GUI 의 hold 와 같은 규칙.
+    // 마지막 점(펜을 뗀 자리)도 본다 — 두 점짜리 "머무르기" 획이 바로 그 경우다.
+    const auto holdBefore = [&](usize i) {
         if (preset.airbrush && pts[i].timeMs >= 0.0 && pts[i - 1].timeMs >= 0.0 &&
             pts[i].x == pts[i - 1].x && pts[i].y == pts[i - 1].y) {
             const int n = static_cast<int>(std::min(1000.0, (pts[i].timeMs - pts[i - 1].timeMs) / 30.0));
             for (int k = 1; k <= n; ++k) pipe.holdStamp(pts[i - 1].timeMs + 30.0 * k);
         }
+    };
+    for (usize i = 1; i + 1 < pts.size(); ++i) {
+        holdBefore(i);
         pipe.extend(makeEvent(pts[i], i));
         entry.move(sampleNow());
     }
     if (pts.size() > 1) {
+        holdBefore(pts.size() - 1);
         pipe.end(makeEvent(pts.back(), pts.size() - 1));
     } else {
         pipe.end();

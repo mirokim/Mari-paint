@@ -50,6 +50,7 @@ Result<void> StrokePipeline::begin(const brush::StrokeContext& ctx, const RawInp
     last_ = s;
     source_ = ctx.source; // 출처는 문맥에서 그대로 들고 온다. 여기서 고르지 않는다
     active_ = true;
+    holds_ = 0;
     dirtyClean_ = dirty_.empty();
     return Ok();
 }
@@ -82,6 +83,7 @@ void StrokePipeline::holdStamp(f64 timeMs) noexcept {
     in.velocity = 0.0f;
     in.timeMs = timeMs;
     sink.onStamp(in);
+    ++holds_;
     dirtyClean_ = false;
     if (dirty_.size() >= dirty_.capacity())
         compactDirty();

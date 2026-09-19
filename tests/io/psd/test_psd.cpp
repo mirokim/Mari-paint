@@ -106,4 +106,23 @@ MARI_TEST(psd_rejects_what_it_cannot_read_honestly) {
     CHECK(!psd::load("/없는/파일.psd").ok());
 }
 
+MARI_TEST(psd_rejects_absurd_layer_rects_instead_of_allocating) {
+    // 정상 문서를 만든 뒤 첫 레이어 레코드의 bottom/right 를 거대하게 고친다 → bad_alloc 이 아니라 Err.
+    Result<LayerTreePtr> made = makeLayerTree(Size{8, 8});
+    CHECK(made.ok());
+    Result<LayerPtr> base = made.value()->addRaster("a");
+    CHECK(base.ok());
+    fillRect(*base.value(), Rect{0, 0, 8, 8}, Color8::rgba(1, 2, 3));
+    Result<std::vector<u8>> bytes = psd::saveToMemory(*made.value());
+    CHECK(bytes.ok());
+    if (!bytes.ok()) return;
+    std::vector<u8>& b = bytes.value();
+    // 헤더 26 + colorLen(4) + resLen(4) + lmLen(4) + layerInfoLen(4) + count(2) → 레코드 시작. top,left,bottom,right.
+    const usize rec = 26 + 4 + 4 + 4 + 4 + 2;
+    CHECK(b.size() > rec + 16);
+    for (usize k = 0; k < 4; ++k) { b[rec + 8 + k] = 0x7F; b[rec + 12 + k] = 0x7F; } // bottom, right = 0x7F7F7F7F
+    const Result<psd::Document> back = psd::loadFromMemory(b.data(), b.size());
+    CHECK(!back.ok());
+}
+
 MARI_TEST_MAIN()

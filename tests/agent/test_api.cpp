@@ -991,6 +991,66 @@ MARI_TEST(agent_stroke_accepts_tilt_and_time) {
     CHECK(!s->execute(bad)["ok"].asBool());
 }
 
+MARI_TEST(airbrush_holds_at_the_last_point_too) {
+    // 두 점짜리 "같은 자리에 3초" 획 — 펜을 뗀 자리에서도 시간만큼 쌓여야 한다.
+    std::unique_ptr<AgentSession> s = sessionWith(mari_ctx, 128, 128);
+    CHECK(s != nullptr);
+    if (s == nullptr) {
+        return;
+    }
+    const auto holdStroke = [&](double holdMs) {
+        Json j = req("stroke");
+        j.set("brush", Json::string("에어브러시"));
+        j.set("size", Json::number(40));
+        j.set("opacity", Json::number(0.3));
+        Json pts = Json::array();
+        for (int i = 0; i < 2; ++i) {
+            Json p = Json::object();
+            p.set("x", Json::integer(64)); p.set("y", Json::integer(64));
+            p.set("t", Json::number(i == 0 ? 0.0 : holdMs));
+            pts.push(std::move(p));
+        }
+        j.set("points", std::move(pts));
+        const Json r = s->execute(j);
+        CHECK(r["ok"].asBool());
+        return r["result"]["stamps"].asInt();
+    };
+    const i64 quick = holdStroke(1.0);
+    CHECK(s->document()->undo().ok());
+    const i64 held = holdStroke(3000.0);
+    CHECK(held > quick + 50); // 30ms 마다 한 번 → 3초면 100번쯤
+}
+
+MARI_TEST(ungroup_moves_active_layer_off_the_removed_group) {
+    std::unique_ptr<AgentSession> s = sessionWith(mari_ctx, 64, 64);
+    CHECK(s != nullptr);
+    if (s == nullptr) {
+        return;
+    }
+    Json add = req("layer.add");
+    add.set("name", Json::string("안"));
+    const Json inner = s->execute(add);
+    CHECK(inner["ok"].asBool());
+    Json grp = req("layer.group");
+    grp.set("layer", Json::string("안"));
+    const Json g = s->execute(grp);
+    CHECK(g["ok"].asBool());
+    const i64 gid = g["result"]["group"]["id"].asInt();
+    Json act = req("layer.setProps");
+    act.set("layer", Json::integer(gid));
+    act.set("active", Json::boolean(true));
+    (void)s->execute(act);
+    Json ung = req("layer.ungroup");
+    ung.set("layer", Json::integer(gid));
+    CHECK(s->execute(ung)["ok"].asBool());
+    // 활성 레이어가 살아 있는 레이어여야 layer 없이 그리는 다음 획이 성공한다.
+    Json st = req("stroke");
+    Json pts = Json::array();
+    for (int i = 0; i < 2; ++i) { Json p = Json::object(); p.set("x", Json::integer(10 + i * 20)); p.set("y", Json::integer(20)); pts.push(std::move(p)); }
+    st.set("points", std::move(pts));
+    CHECK(s->execute(st)["ok"].asBool());
+}
+
 // ── 브러시 라이브러리(.mbp) ───────────────────────────────────────────────
 
 MARI_TEST(brush_preset_round_trips_through_mbp_json) {

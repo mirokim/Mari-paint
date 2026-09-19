@@ -111,6 +111,8 @@ public:
 
     /// 새 명령을 쌓는다. **다시하기 스택은 버려진다.**
     void push(UndoCommandPtr cmd);
+    /// 맨 위 되돌리기 명령을 실행하지 않고 꺼낸다(동시 획 여러 개를 하나로 묶을 때). 비었으면 null.
+    [[nodiscard]] UndoCommandPtr takeLast();
 
     [[nodiscard]] bool canUndo() const { return !undo_.empty(); }
     [[nodiscard]] bool canRedo() const { return !redo_.empty(); }
