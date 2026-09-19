@@ -84,6 +84,14 @@ private:
     void showImageSizeDialog(bool canvasOnly);
     void beginFreeTransform();
     void afterPixelChange();
+    // 자동 저장 · 백업 · 복구
+    void setupAutosave();
+    void autosaveNow();
+    void clearAutosave();
+    void markAutosaveDirty();
+    void checkRecovery();
+    void showAutosaveSettings();
+    [[nodiscard]] QString autosaveDir() const;
     void showShortcutDialog();
     // 브러시 라이브러리(.mbp 폴더 = 헤드리스와 공유)
     void reloadBrushes(const QString& selectName = QString());
@@ -149,6 +157,10 @@ private:
     } viewActions_;
     bool syncingSize_ = false;
     QTimer* thumbTimer_ = nullptr;
+    QTimer* autosaveTimer_ = nullptr;
+    QString autosaveId_;
+    bool autosaveDirty_ = false;
+    bool recovered_ = false; ///< 자동 저장본에서 열었다 — 저장은 반드시 '다른 이름으로'
     std::unique_ptr<ShortcutRegistry> shortcuts_;
 
     QLabel* statusToolIcon_ = nullptr;

@@ -284,6 +284,20 @@ Result<void> Document::save() {
     return saveAs(path_, "ora");
 }
 
+Result<void> Document::writeCopy(const std::string& path) {
+    if (closed_) {
+        return Err("닫힌 문서다", ErrorCode::InvalidArgument);
+    }
+    ora::SaveOptions opts;
+    if (recorder_ != nullptr) {
+        Result<std::string> log = recorder_->buildProofLog();
+        if (log.ok()) {
+            opts.proofLog = std::move(log).value();
+        }
+    }
+    return ora::save(*tree_, path, opts);
+}
+
 Result<void> Document::saveAs(const std::string& path, const std::string& format) {
     if (closed_) {
         return Err("닫힌 문서다", ErrorCode::InvalidArgument);

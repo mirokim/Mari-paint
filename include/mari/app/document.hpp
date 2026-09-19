@@ -45,6 +45,8 @@ public:
 
     [[nodiscard]] Result<void> save() override;
     [[nodiscard]] Result<void> saveAs(const std::string& path, const std::string& format) override;
+    /// 현재 상태를 .ora 로 **복사만** 쓴다(경로·저장됨 표시를 건드리지 않는다). 자동 저장·백업용.
+    [[nodiscard]] Result<void> writeCopy(const std::string& path);
     [[nodiscard]] Result<void> close(bool saveChanges) override;
 
     [[nodiscard]] Result<void> exportComposite(std::vector<u8>& dst) override;

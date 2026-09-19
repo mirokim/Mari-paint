@@ -37,6 +37,13 @@
 #include <QFormLayout>
 #include <QPushButton>
 #include <QDialog>
+#include <QDateTime>
+#include <QDir>
+#include <QStandardPaths>
+#include <QUuid>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QFile>
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QVBoxLayout>
@@ -140,6 +147,7 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
         thumbTimer_->start();
         refreshStatus();
         refreshTitle();
+        markAutosaveDirty();
     });
     connect(canvas_, &CanvasWidget::strokeRefused, this, [this](const QString& why) {
         statusBar()->showMessage("획을 시작하지 못했다: " + why, 6000);
@@ -159,6 +167,7 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     connect(canvas_, &CanvasWidget::regionFilled, this, [this] {
         thumbTimer_->start();
         refreshTitle();
+        markAutosaveDirty();
     });
     connect(canvas_, &CanvasWidget::selectionChanged, this, &MainWindow::refreshStatus);
 
@@ -173,6 +182,8 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     }
     refreshTitle();
     refreshStatus();
+    setupAutosave();
+    QTimer::singleShot(300, this, &MainWindow::checkRecovery);
 
     if (qEnvironmentVariableIsSet("MARI_GUI_TRACE")) {
         QTimer::singleShot(1500, this, [this] {
@@ -202,6 +213,8 @@ void MainWindow::buildMenus() {
     file->addAction(themedIcon("folder-open"), "열기(&O)...", QKeySequence::Open, this, &MainWindow::openDocument);
     file->addAction(themedIcon("device-floppy"), "저장(&S)", QKeySequence::Save, this, [this] { saveDocument(false); });
     file->addAction("다른 이름으로 저장(&A)...", QKeySequence::SaveAs, this, [this] { saveDocument(true); });
+    file->addSeparator();
+    file->addAction("자동 저장 · 백업 설정...", this, &MainWindow::showAutosaveSettings);
     file->addSeparator();
     file->addAction("종료(&Q)", QKeySequence::Quit, this, &QWidget::close);
 
@@ -628,6 +641,8 @@ app::Document* MainWindow::activeDocument() const {
 }
 
 void MainWindow::attachDocument(app::Document* doc) {
+    autosaveId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    autosaveDirty_ = false;
     canvas_->setDocument(doc);
     layerPanel_->setDocument(doc);
     if (navigator_ != nullptr) navigator_->refreshImage();
@@ -678,17 +693,27 @@ bool MainWindow::saveDocument(bool forceDialog) {
     app::Document* doc = activeDocument();
     if (doc == nullptr) return false;
     std::string path = doc->fullPath();
-    if (forceDialog || path.empty()) {
+    if (forceDialog || path.empty() || recovered_) {
         const QString chosen = QFileDialog::getSaveFileName(this, "저장", QString(), "OpenRaster (*.ora)");
         if (chosen.isEmpty()) return false;
         path = chosen.toStdString();
         if (path.size() < 4 || path.substr(path.size() - 4) != ".ora") path += ".ora";
+    }
+    // 백업: 덮어쓰기 전 원본을 .bak 로(설정으로 끈다).
+    if (QSettings().value("backup/enabled", true).toBool()) {
+        const QString q = QString::fromStdString(path);
+        if (QFile::exists(q)) {
+            QFile::remove(q + ".bak");
+            QFile::copy(q, q + ".bak");
+        }
     }
     const Result<void> saved = doc->saveAs(path, "ora");
     if (!saved.ok()) {
         QMessageBox::warning(this, "저장", QString::fromStdString(saved.message()));
         return false;
     }
+    recovered_ = false;
+    clearAutosave();
     refreshTitle();
     statusBar()->showMessage("저장했다: " + QString::fromStdString(path), 3000);
     return true;
@@ -711,6 +736,7 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     }
     if (canvasOnly_) toggleCanvasOnly();
     if (panelsHidden_) togglePanels();
+    clearAutosave();
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
     settings.setValue("window/state", saveState());
@@ -980,6 +1006,7 @@ void MainWindow::deleteBrush(int index) {
 // ── 이미지 메뉴 ───────────────────────────────────────────────────────────
 
 void MainWindow::afterPixelChange() {
+    markAutosaveDirty();
     canvas_->invalidateCanvas();
     layerPanel_->refresh();
     thumbTimer_->start();
@@ -1085,6 +1112,150 @@ void MainWindow::beginFreeTransform() {
     else statusBar()->showMessage("자유 변형: 드래그 이동 · 모서리 확대(Shift 비율) · 바깥 회전(Shift 15°) · Enter 적용 · Esc 취소", 8000);
 }
 
+// ── 자동 저장 · 백업 · 복구 ────────────────────────────────────────────────
+
+QString MainWindow::autosaveDir() const {
+    const QString dir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath("autosave");
+    QDir().mkpath(dir);
+    return dir;
+}
+
+void MainWindow::setupAutosave() {
+    autosaveTimer_ = new QTimer(this);
+    connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::autosaveNow);
+    const int minutes = QSettings().value("autosave/minutes", 3).toInt();
+    if (minutes > 0) autosaveTimer_->start(minutes * 60 * 1000);
+}
+
+void MainWindow::markAutosaveDirty() { autosaveDirty_ = true; }
+
+void MainWindow::autosaveNow() {
+    app::Document* doc = activeDocument();
+    if (doc == nullptr || !autosaveDirty_ || canvas_->strokeActive() || canvas_->transformActive()) return;
+    const QString base = QDir(autosaveDir()).filePath(autosaveId_);
+    const Result<void> w = doc->writeCopy((base + ".ora").toStdString());
+    if (!w.ok()) {
+        statusBar()->showMessage("자동 저장 실패: " + QString::fromStdString(w.message()), 5000);
+        return;
+    }
+    QJsonObject meta;
+    meta["original"] = QString::fromStdString(doc->fullPath());
+    meta["time"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    meta["width"] = doc->canvasSize().width;
+    meta["height"] = doc->canvasSize().height;
+    QFile f(base + ".json");
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(meta).toJson());
+    autosaveDirty_ = false;
+    statusBar()->showMessage("자동 저장했다 (" + QDateTime::currentDateTime().toString("HH:mm") + ")", 2000);
+}
+
+void MainWindow::clearAutosave() {
+    if (autosaveId_.isEmpty()) return;
+    const QString base = QDir(autosaveDir()).filePath(autosaveId_);
+    QFile::remove(base + ".ora");
+    QFile::remove(base + ".json");
+    autosaveDirty_ = false;
+}
+
+void MainWindow::checkRecovery() {
+    QDir dir(autosaveDir());
+    const QStringList files = dir.entryList({"*.ora"}, QDir::Files, QDir::Time);
+    if (files.isEmpty()) return;
+    QDialog dlg(this);
+    dlg.setWindowTitle("복구할 문서가 있다");
+    dlg.resize(560, 320);
+    auto* layout = new QVBoxLayout(&dlg);
+    layout->addWidget(new QLabel("지난번에 저장하지 않고 끝난 문서의 자동 저장본이다. 복구하면 '다른 이름으로 저장'으로 저장한다.", &dlg));
+    auto* tree = new QTreeWidget(&dlg);
+    tree->setHeaderLabels({"원본", "시각", "크기"});
+    tree->setRootIsDecorated(false);
+    for (const QString& f : files) {
+        const QString base = dir.filePath(f.left(f.size() - 4));
+        QString original = "(제목 없음)", when, size;
+        QFile mf(base + ".json");
+        if (mf.open(QIODevice::ReadOnly)) {
+            const QJsonObject o = QJsonDocument::fromJson(mf.readAll()).object();
+            if (!o["original"].toString().isEmpty()) original = o["original"].toString();
+            when = o["time"].toString();
+            size = QString("%1×%2").arg(o["width"].toInt()).arg(o["height"].toInt());
+        }
+        auto* it = new QTreeWidgetItem(tree, {original, when, size});
+        it->setData(0, Qt::UserRole, base);
+    }
+    tree->setCurrentItem(tree->topLevelItem(0));
+    layout->addWidget(tree, 1);
+    auto* buttons = new QDialogButtonBox(&dlg);
+    QPushButton* recover = buttons->addButton("복구", QDialogButtonBox::AcceptRole);
+    QPushButton* discard = buttons->addButton("삭제", QDialogButtonBox::DestructiveRole);
+    QPushButton* later = buttons->addButton("나중에", QDialogButtonBox::RejectRole);
+    layout->addWidget(buttons);
+    connect(recover, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(later, &QPushButton::clicked, &dlg, &QDialog::reject);
+    connect(discard, &QPushButton::clicked, &dlg, [&] {
+        QTreeWidgetItem* it = tree->currentItem();
+        if (it == nullptr) return;
+        const QString base = it->data(0, Qt::UserRole).toString();
+        QFile::remove(base + ".ora");
+        QFile::remove(base + ".json");
+        delete it;
+        if (tree->topLevelItemCount() == 0) dlg.reject();
+    });
+    if (dlg.exec() != QDialog::Accepted) return;
+    QTreeWidgetItem* it = tree->currentItem();
+    if (it == nullptr) return;
+    const QString base = it->data(0, Qt::UserRole).toString();
+    // 시작 직후의 빈 새 문서(경로 없음·실행취소 항목 0)는 묻지 않고 버린다.
+    if (app::Document* cur = activeDocument();
+        !(cur != nullptr && cur->fullPath().empty() && cur->undoStack().undoCount() == 0) && !confirmDiscard())
+        return;
+    if (app::Document* old = activeDocument()) {
+        canvas_->setDocument(nullptr);
+        layerPanel_->setDocument(nullptr);
+        (void)app_.closeDocument(old, false);
+    }
+    Result<app::IDocumentBridge*> opened = app_.open((base + ".ora").toStdString());
+    if (!opened.ok()) {
+        QMessageBox::warning(this, "복구", QString::fromStdString(opened.message()));
+        attachDocument(activeDocument());
+        return;
+    }
+    attachDocument(static_cast<app::Document*>(opened.value()));
+    recovered_ = true;
+    // 복구본은 열자마자 제거한다 — 사용자가 저장하면 진짜 파일이 되고, 다시 자동 저장이 돈다.
+    QFile::remove(base + ".ora");
+    QFile::remove(base + ".json");
+    markAutosaveDirty();
+    statusBar()->showMessage("자동 저장본에서 복구했다 — Ctrl+S 로 저장 위치를 정해라", 8000);
+}
+
+void MainWindow::showAutosaveSettings() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("자동 저장 · 백업");
+    auto* form = new QFormLayout(&dlg);
+    auto* minutes = new QSpinBox(&dlg);
+    minutes->setRange(0, 60);
+    minutes->setSpecialValueText("끔");
+    minutes->setSuffix(" 분");
+    minutes->setValue(QSettings().value("autosave/minutes", 3).toInt());
+    form->addRow("자동 저장 간격", minutes);
+    auto* backup = new QCheckBox("저장할 때 원본을 .bak 로 남긴다", &dlg);
+    backup->setChecked(QSettings().value("backup/enabled", true).toBool());
+    form->addRow("", backup);
+    form->addRow(new QLabel("자동 저장 위치: " + autosaveDir(), &dlg));
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText("확인");
+    buttons->button(QDialogButtonBox::Cancel)->setText("취소");
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    QSettings s;
+    s.setValue("autosave/minutes", minutes->value());
+    s.setValue("backup/enabled", backup->isChecked());
+    autosaveTimer_->stop();
+    if (minutes->value() > 0) autosaveTimer_->start(minutes->value() * 60 * 1000);
+}
+
 void MainWindow::togglePanels() {
     panelsHidden_ = !panelsHidden_;
     const bool show = !panelsHidden_;
@@ -1174,8 +1345,8 @@ void MainWindow::refreshTitle() {
     QString title = "Mari Paint";
     if (doc != nullptr) {
         const std::string p = doc->fullPath();
-        title = (p.empty() ? QString("제목 없음") : QString::fromStdString(p)) + (doc->isSaved() ? "" : " *") +
-                " — Mari Paint";
+        title = (recovered_ ? QString("복구된 문서 (저장 위치 미정)") : p.empty() ? QString("제목 없음") : QString::fromStdString(p)) +
+                (doc->isSaved() && !recovered_ ? "" : " *") + " — Mari Paint";
     }
     setWindowTitle(title);
     refreshStatus();
