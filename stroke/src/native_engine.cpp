@@ -178,9 +178,7 @@ public:
         }
         preset_.scatterCount = std::clamp(preset_.scatterCount, 1, 16);
         preset_.noise = clamp01(preset_.noise);
-        if (preset_.airbrush && report)
-            report->add(ImportSeverity::Degraded, "airbrush",
-                        "에어브러시(멈춰 있어도 쌓임)는 native 엔진이 시간 반복을 하지 않아 보통 붓처럼 찍습니다");
+        // airbrush: 시간 반복은 파이프라인(holdStamp)이 한다 — 엔진은 스탬프만 찍는다.
 
         if (report)
             for (const auto& kv : preset_.extraParams)

@@ -60,6 +60,18 @@ QBrush checkerBrush() {
 } // namespace
 
 CanvasWidget::CanvasWidget(QWidget* parent) : QWidget(parent) {
+    airbrushTimer_ = new QTimer(this);
+    airbrushTimer_->setInterval(30);
+    connect(airbrushTimer_, &QTimer::timeout, this, [this] {
+        if (live_ == nullptr || !live_->airbrush()) return;
+        const u64 now = stroke::monotonicNowNs();
+        if (now - lastMoveNs_ < 40'000'000ull) return; // 움직이는 동안은 보간기가 찍는다
+        const f64 tMs = static_cast<f64>(now - strokeStartNs_) / 1e6;
+        live_->hold(tMs);
+        scheduleCanvasRepaint(live_->takeDisplayDirty(), now);
+        for (auto& m : mirrors_) { m->hold(tMs); scheduleCanvasRepaint(m->takeDisplayDirty(), now); }
+    });
+
     // ⚠️ WA_NativeWindow 를 주지 않는다 — 헤더 머리글 3번. 메시지는 최상위 창에서 필터로 받는다.
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_NoSystemBackground);
@@ -508,6 +520,8 @@ void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
     }
     live_ = std::move(begun).value();
     scheduleCanvasRepaint(live_->takeDisplayDirty(), s.event.timestampNs);
+    strokeStartNs_ = lastMoveNs_ = stroke::monotonicNowNs();
+    if (live_->airbrush()) airbrushTimer_->start();
     // 대칭: 축마다 획을 하나 더 시작한다(같은 설정, 다른 시드). 각각 따로 기록·실행취소된다.
     mirrors_.clear();
     if (symmetry_ != 0) {
@@ -532,6 +546,7 @@ void CanvasWidget::onPointerMove(const mari::win::PointerSample& s) {
     }
     const stroke::RawInputEvent e = shapedEvent(s);
     live_->extend(e);
+    lastMoveNs_ = stroke::monotonicNowNs();
     scheduleCanvasRepaint(live_->takeDisplayDirty(), e.timestampNs);
     if (!mirrors_.empty()) {
         int idx = 0;
@@ -555,6 +570,7 @@ void CanvasWidget::onPointerCancel(u32 /*pointerId*/) {
 }
 
 void CanvasWidget::finishStroke(const stroke::RawInputEvent* last) {
+    airbrushTimer_->stop();
     if (live_ == nullptr) {
         return;
     }

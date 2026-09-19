@@ -284,7 +284,6 @@ MARI_TEST(engine_reports_what_it_could_not_do) {
     p.blendMode = BlendMode::Overlay; // 아직 못 한다
     p.extraParams.push_back({"csp/effector_size", 1.0f});
     p.tip.kind = TipKind::Bitmap; // 비트맵인데 그림이 없다
-    p.airbrush = true;            // 시간 반복은 안 한다
 
     ImportReport rep;
     auto e = makeNativeEngine();
@@ -292,7 +291,7 @@ MARI_TEST(engine_reports_what_it_could_not_do) {
 
     CHECK(!rep.hasDropped()); // 텍스처는 이제 합성한다 — 버리는 게 없어야 한다
     CHECK(!rep.clean());
-    bool texture = false, blend = false, extra = false, bitmap = false, air = false;
+    bool texture = false, blend = false, extra = false, bitmap = false;
     for (const auto& n : rep.notes) {
         if (n.sourceKey == "texture/blendMode" && n.severity == ImportSeverity::Degraded)
             texture = true;
@@ -302,14 +301,11 @@ MARI_TEST(engine_reports_what_it_could_not_do) {
             extra = true;
         if (n.sourceKey == "tip/bitmap" && n.severity == ImportSeverity::Degraded)
             bitmap = true;
-        if (n.sourceKey == "airbrush" && n.severity == ImportSeverity::Degraded)
-            air = true;
     }
     CHECK(texture);
     CHECK(blend);
     CHECK(extra);
     CHECK(bitmap);
-    CHECK(air);
 }
 
 MARI_TEST(engine_texture_multiplies_coverage) {

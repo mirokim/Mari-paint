@@ -81,6 +81,9 @@ public:
 
     /// 펜이 움직였다. **핫 패스** — 할당은 실행취소 캡처(새 타일을 처음 만날 때)뿐이다.
     void extend(const stroke::RawInputEvent& e) noexcept;
+    /// 에어브러시: 펜이 멈춘 자리에 스탬프를 더 찍는다. 프리셋이 airbrush 가 아니면 아무것도 안 한다.
+    void hold(f64 timeMs) noexcept;
+    [[nodiscard]] bool airbrush() const noexcept { return airbrush_; }
 
     /// 펜이 떨어졌다. `last` 가 nullptr 이면 마지막 이벤트 없이 끝낸다(포커스 상실 등).
     /// 실행취소 스택에 넣고, 기록을 마무리하고, 고장이면 되돌린다.
@@ -122,6 +125,7 @@ private:
     f64 lastX_ = 0.0;
     f64 lastY_ = 0.0;
     i32 margin_ = 0;
+    bool airbrush_ = false;
     bool ended_ = false;
 };
 

@@ -50,6 +50,8 @@ public:
     [[nodiscard]] Result<void> begin(const brush::StrokeContext& ctx, const RawInputEvent& e);
     /// 펜이 움직였다. **핫 패스.**
     void extend(const RawInputEvent& e) noexcept;
+    /// 에어브러시: 펜이 멈춰 있어도 마지막 자리에 스탬프 하나를 더 찍는다(보간 없이 엔진 직행).
+    void holdStamp(f64 timeMs) noexcept;
     /// 펜이 떨어졌다. 마지막 이벤트가 있으면 같이 넘긴다.
     void end(const RawInputEvent& e) noexcept;
     /// 마지막 이벤트 없이 끝낸다(포커스 상실 등).

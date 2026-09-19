@@ -193,4 +193,21 @@ MARI_TEST(pipeline_dead_zone_ignores_small_jitter) {
     pipe.end();
 }
 
+MARI_TEST(pipeline_hold_stamp_adds_ink_without_moving) {
+    // 에어브러시: 움직이지 않아도 holdStamp 마다 잉크가 더 쌓인다.
+    auto e = makeNativeEngine();
+    brush::MariBrushPreset p = roundPreset(10.0f);
+    p.opacity = 0.2f;
+    (void)e.value()->setPreset(p, nullptr);
+    StrokePipeline pipe(e.value().get());
+    FakeTileMap map;
+    pipe.setConfig(StrokeConfig{});
+    (void)pipe.begin(ctxFor(&map), pen(40, 40, 0));
+    const u8 a0 = map.pixelAt(40, 40).a;
+    for (int i = 0; i < 5; ++i) pipe.holdStamp(30.0 * (i + 1));
+    const u8 a1 = map.pixelAt(40, 40).a;
+    pipe.end();
+    CHECK(a1 > a0 + 60);
+}
+
 MARI_TEST_MAIN()

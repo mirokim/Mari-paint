@@ -445,6 +445,12 @@ Result<Json> stroke(AgentSession& s, const Json& req) {
     }
     entry.down(sampleNow());
     for (usize i = 1; i + 1 < pts.size(); ++i) {
+        // 에어브러시: 같은 자리에 머문 시간(t 차이)만큼 30ms 마다 한 번 더 찍는다 — GUI 의 hold 와 같은 규칙.
+        if (preset.airbrush && pts[i].timeMs >= 0.0 && pts[i - 1].timeMs >= 0.0 &&
+            pts[i].x == pts[i - 1].x && pts[i].y == pts[i - 1].y) {
+            const int n = static_cast<int>(std::min(1000.0, (pts[i].timeMs - pts[i - 1].timeMs) / 30.0));
+            for (int k = 1; k <= n; ++k) pipe.holdStamp(pts[i - 1].timeMs + 30.0 * k);
+        }
         pipe.extend(makeEvent(pts[i], i));
         entry.move(sampleNow());
     }

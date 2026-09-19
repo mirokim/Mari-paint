@@ -68,6 +68,25 @@ void StrokePipeline::extend(const RawInputEvent& e) noexcept {
         compactDirty();
 }
 
+void StrokePipeline::holdStamp(f64 timeMs) noexcept {
+    if (!active_)
+        return;
+    Sink sink(engine_, dirty_);
+    brush::StampInput in{};
+    in.pos = last_.pos;
+    in.pressure = last_.pressure;
+    in.tiltX = last_.tiltX;
+    in.tiltY = last_.tiltY;
+    in.azimuth = last_.azimuthDeg;
+    in.rotation = last_.rotationDeg;
+    in.velocity = 0.0f;
+    in.timeMs = timeMs;
+    sink.onStamp(in);
+    dirtyClean_ = false;
+    if (dirty_.size() >= dirty_.capacity())
+        compactDirty();
+}
+
 void StrokePipeline::end(const RawInputEvent& e) noexcept {
     if (!active_)
         return;

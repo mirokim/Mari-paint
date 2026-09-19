@@ -92,6 +92,7 @@ Result<std::unique_ptr<LiveStroke>> LiveStroke::begin(Document& doc, const Strok
     s->layerId_ = layerId;
     s->engine_ = std::move(engine).value();
     s->margin_ = static_cast<i32>(std::ceil(strokeMargin(cfg.preset)));
+    s->airbrush_ = cfg.preset.airbrush;
 
     // 🔴 출처는 받은 그대로. 여기서 만들지도 바꾸지도 않는다.
     s->ctx_ = std::make_unique<brush::StrokeContext>(src);
@@ -177,6 +178,16 @@ void LiveStroke::extend(const stroke::RawInputEvent& e) noexcept {
     pipe_->extend(e);
     noteDisplay(before, pipe_->lastSample().pos);
     entry_->move(sampleNow());
+}
+
+void LiveStroke::hold(f64 timeMs) noexcept {
+    if (ended_ || !airbrush_ || !pipe_->active()) {
+        return;
+    }
+    const PointF p = pipe_->lastSample().pos;
+    captureAround(p.x, p.y);
+    pipe_->holdStamp(timeMs);
+    noteDisplay(p, p);
 }
 
 void LiveStroke::noteDisplay(PointF p0, PointF p1) noexcept {

@@ -246,6 +246,9 @@ private:
     bool shapeDrag_ = false;
     QPointF shapeStart_, shapeCur_;
     std::vector<std::unique_ptr<app::LiveStroke>> mirrors_; ///< 대칭 획(축 1·2·3 → 최대 3개)
+    QTimer* airbrushTimer_ = nullptr; ///< 에어브러시: 펜이 멈춰 있어도 쌓인다
+    u64 lastMoveNs_ = 0;
+    u64 strokeStartNs_ = 0;
 
     // 자유 변형 상태
     struct Transforming {
