@@ -6,7 +6,9 @@
 #include <mari/crypto/sha256.hpp>
 #include <mari/ora/image.hpp>
 #include <mari/ora/ora.hpp>
+#include <mari/psd/psd.hpp>
 
+#include <cctype>
 #include <filesystem>
 #include <utility>
 
@@ -281,7 +283,10 @@ Result<void> Document::save() {
         return Err("저장된 적 없는 문서다 — saveAs() 로 경로를 정해라",
                    ErrorCode::InvalidArgument);
     }
-    return saveAs(path_, "ora");
+    const auto dot = path_.rfind('.');
+    std::string ext = dot == std::string::npos ? std::string() : path_.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return saveAs(path_, ext == "psd" ? "psd" : "ora");
 }
 
 Result<void> Document::writeCopy(const std::string& path) {
@@ -322,6 +327,11 @@ Result<void> Document::saveAs(const std::string& path, const std::string& format
         if (!r.ok()) {
             return r;
         }
+    } else if (fmt == "psd") {
+        const Result<void> r = psd::save(*tree_, path);
+        if (!r.ok()) {
+            return r;
+        }
     } else if (fmt == "png") {
         // 합성 결과 한 장. 레이어는 사라진다 — 그래서 path_ 를 갱신하지 않는다.
         std::vector<u8> pixels;
@@ -342,9 +352,6 @@ Result<void> Document::saveAs(const std::string& path, const std::string& format
         if (!w.ok()) {
             return w;
         }
-    } else if (fmt == "psd") {
-        // 🔴 없는 기능을 있는 척하지 않는다. .psd 쓰기는 docs/04 3절에서 "시작 안 함".
-        return Err(".psd 쓰기는 아직 구현되지 않았다", ErrorCode::Unsupported);
     } else {
         return Err("모르는 포맷이다: " + format + " (ora | png | psd)", ErrorCode::Unsupported);
     }
@@ -363,7 +370,7 @@ Result<void> Document::saveAs(const std::string& path, const std::string& format
         sizeBytes = static_cast<i64>(sz);
     }
 
-    if (fmt == "ora") {
+    if (fmt == "ora" || fmt == "psd") {
         path_ = path;
         saved_ = true;
     }

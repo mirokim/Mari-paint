@@ -1,6 +1,8 @@
 // Mari Paint — 문서·스냅샷·일괄·이벤트 연산. 표는 capabilities.cpp 에 있다.
 #include <mari/agent/session.hpp>
 
+#include <cctype>
+
 #include <mari/app/document.hpp>
 #include <mari/core/compositor.hpp>
 #include <mari/crypto/sha256.hpp>
@@ -193,10 +195,17 @@ Result<Json> docSave(AgentSession& s, const Json& req) {
         return d.error();
     }
     app::Document* doc = d.value();
-    const std::string fmt = req["format"].isString() ? req["format"].asString() : std::string("ora");
     std::string path = req["path"].isString() ? req["path"].asString() : doc->fullPath();
     if (path.empty()) {
         return Err("저장 경로가 없다 — path 를 줘라", ErrorCode::InvalidArgument);
+    }
+    std::string fmt = req["format"].isString() ? req["format"].asString() : std::string();
+    if (fmt.empty()) {
+        // 확장자로 고른다: .psd → psd, .png → png, 그 외 ora.
+        const auto dot = path.rfind('.');
+        std::string ext = dot == std::string::npos ? std::string() : path.substr(dot + 1);
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        fmt = (ext == "psd" || ext == "png") ? ext : std::string("ora");
     }
     const Result<void> r = doc->saveAs(path, fmt);
     if (!r.ok()) {

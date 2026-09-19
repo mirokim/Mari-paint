@@ -39,7 +39,7 @@ std::vector<OpSpec> makeTable() {
                        "",
                        true,
                        ViewMode::None,
-                       {P{"path", "string", true, "열 파일 경로(.ora)"}},
+                       {P{"path", "string", true, "열 파일 경로(.ora | .psd)"}},
                        &ops::docOpen});
     t.push_back(OpSpec{"doc.save",
                        "doc",
@@ -49,7 +49,7 @@ std::vector<OpSpec> makeTable() {
                        false,
                        ViewMode::None,
                        {P{"path", "string", false, "저장 경로. 없으면 원래 경로"},
-                        P{"format", "string", false, "ora | png (psd 는 미지원)"}},
+                        P{"format", "string", false, "ora | psd | png. 없으면 확장자로 고른다"}},
                        &ops::docSave});
     t.push_back(OpSpec{"doc.close",
                        "doc",

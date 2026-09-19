@@ -783,7 +783,7 @@ void MainWindow::newDocument() {
 
 void MainWindow::openDocument() {
     if (!confirmDiscard()) return;
-    const QString path = QFileDialog::getOpenFileName(this, "열기", QString(), "OpenRaster (*.ora)");
+    const QString path = QFileDialog::getOpenFileName(this, "열기", QString(), "그림 (*.ora *.psd);;OpenRaster (*.ora);;Photoshop (*.psd)");
     if (path.isEmpty()) return;
     if (app::Document* old = activeDocument()) {
         canvas_->setDocument(nullptr);
@@ -804,10 +804,12 @@ bool MainWindow::saveDocument(bool forceDialog) {
     if (doc == nullptr) return false;
     std::string path = doc->fullPath();
     if (forceDialog || path.empty() || recovered_) {
-        const QString chosen = QFileDialog::getSaveFileName(this, "저장", QString(), "OpenRaster (*.ora)");
+        const QString chosen = QFileDialog::getSaveFileName(this, "저장", QString(), "OpenRaster (*.ora);;Photoshop (*.psd)");
         if (chosen.isEmpty()) return false;
         path = chosen.toStdString();
-        if (path.size() < 4 || path.substr(path.size() - 4) != ".ora") path += ".ora";
+        const bool isOra = path.size() >= 4 && path.substr(path.size() - 4) == ".ora";
+        const bool isPsd = path.size() >= 4 && path.substr(path.size() - 4) == ".psd";
+        if (!isOra && !isPsd) path += ".ora";
     }
     // 백업: 덮어쓰기 전 원본을 .bak 로(설정으로 끈다).
     if (QSettings().value("backup/enabled", true).toBool()) {
@@ -817,7 +819,9 @@ bool MainWindow::saveDocument(bool forceDialog) {
             QFile::copy(q, q + ".bak");
         }
     }
-    const Result<void> saved = doc->saveAs(path, "ora");
+    const bool psdOut = path.size() >= 4 && path.substr(path.size() - 4) == ".psd";
+    if (psdOut) statusBar()->showMessage("PSD 는 교환 포맷 — 과정 기록(prooflog)은 .ora 에만 담긴다", 6000);
+    const Result<void> saved = doc->saveAs(path, psdOut ? "psd" : "ora");
     if (!saved.ok()) {
         QMessageBox::warning(this, "저장", QString::fromStdString(saved.message()));
         return false;

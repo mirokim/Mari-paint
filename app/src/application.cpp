@@ -3,6 +3,7 @@
 
 #include <mari/crypto/sha256.hpp>
 #include <mari/ora/ora.hpp>
+#include <mari/psd/psd.hpp>
 
 #include <algorithm>
 #include <utility>
@@ -98,16 +99,25 @@ Result<IDocumentBridge*> Application::createDocument(i32 w, i32 h) {
 
 Result<IDocumentBridge*> Application::open(const std::string& path) {
     const std::string ext = extensionOf(path);
-    if (ext != "ora") {
+    LayerTreePtr tree;
+    if (ext == "ora") {
+        Result<ora::Document> loaded = ora::load(path);
+        if (!loaded.ok()) {
+            return loaded.error();
+        }
+        tree = std::move(loaded).value().tree;
+    } else if (ext == "psd") {
+        // 🔴 PSD 는 교환 포맷이다. 열면 그 경로를 그대로 들고 있어 저장(Ctrl+S)도 .psd 로 간다(saveAs 가 확장자로 고른다).
+        Result<psd::Document> loaded = psd::load(path);
+        if (!loaded.ok()) {
+            return loaded.error();
+        }
+        tree = std::move(loaded).value().tree;
+    } else {
         // 추측해서 열지 않는다(io/brush 의 "정직하게 실패한다"와 같은 태도).
-        return Err("지금은 .ora 만 연다: " + path, ErrorCode::Unsupported);
+        return Err(".ora 와 .psd 만 연다: " + path, ErrorCode::Unsupported);
     }
-    Result<ora::Document> loaded = ora::load(path);
-    if (!loaded.ok()) {
-        return loaded.error();
-    }
-    Result<std::unique_ptr<Document>> doc =
-        Document::adopt(std::move(loaded).value().tree, path, &events_);
+    Result<std::unique_ptr<Document>> doc = Document::adopt(std::move(tree), path, &events_);
     if (!doc.ok()) {
         return doc.error();
     }

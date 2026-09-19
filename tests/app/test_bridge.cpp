@@ -440,12 +440,7 @@ MARI_TEST(unsupported_paths_fail_honestly) {
     }
     IDocumentBridge* d = doc.value();
 
-    // .psd 쓰기는 없다. 있는 척하지 않는다(docs/04 3절).
-    const Result<void> psd = d->saveAs("x.psd", "psd");
-    CHECK(!psd.ok());
-    if (!psd.ok()) {
-        CHECK(psd.code() == ErrorCode::Unsupported);
-    }
+    // 모르는 포맷은 정직하게 거절한다(.psd 는 이제 된다 — tests/io/psd 가 검증한다).
     const Result<void> unknown = d->saveAs("x.zzz", "zzz");
     CHECK(!unknown.ok());
 
@@ -453,11 +448,13 @@ MARI_TEST(unsupported_paths_fail_honestly) {
     const Result<void> noPath = d->save();
     CHECK(!noPath.ok());
 
-    // .psd 열기도 마찬가지.
+    // 없는 파일은 열 수 없고, 모르는 확장자는 추측하지 않는다.
     const Result<IDocumentBridge*> open = app.open("없는파일.psd");
     CHECK(!open.ok());
-    if (!open.ok()) {
-        CHECK(open.code() == ErrorCode::Unsupported);
+    const Result<IDocumentBridge*> weird = app.open("없는파일.xcf");
+    CHECK(!weird.ok());
+    if (!weird.ok()) {
+        CHECK(weird.code() == ErrorCode::Unsupported);
     }
 
     // 8bf 격리 호스트는 이 빌드에 없다. 조용히 성공한 척하지 않는다.

@@ -55,6 +55,7 @@ add_subdirectory(crypto)
 add_subdirectory(stroke)
 add_subdirectory(io/ora)
 add_subdirectory(io/brush)
+add_subdirectory(io/psd)
 add_subdirectory(sigan)
 # app — 플랫폼 중립 브리지 구현체. COM 레이어가 보는 인터페이스를 실제 타입에 물린다.
 add_subdirectory(app)
