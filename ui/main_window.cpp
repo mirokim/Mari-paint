@@ -9,6 +9,7 @@
 #include "icons.hpp"
 #include "layer_panel.hpp"
 #include "navigator.hpp"
+#include "new_document_dialog.hpp"
 #include "popup_palette.hpp"
 #include "shortcut_dialog.hpp"
 #include "side_panels.hpp"
@@ -186,7 +187,10 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
     refreshTitle();
     refreshStatus();
     setupAutosave();
-    QTimer::singleShot(300, this, &MainWindow::checkRecovery);
+    QTimer::singleShot(300, this, [this] {
+        checkRecovery();
+        showLanding();
+    });
 
     if (qEnvironmentVariableIsSet("MARI_GUI_TRACE")) {
         QTimer::singleShot(1500, this, [this] {
@@ -496,6 +500,10 @@ void MainWindow::buildToolbars() {
     optionsBar_->addWidget(new QLabel("보정"));
     smoothingCombo_ = new QComboBox(optionsBar_);
     smoothingCombo_->addItems({"끔", "약함", "보통", "강함"});
+    // 기본은 "약함" — 끔이면 손떨림이 잔물결로 그대로 남는다(실기 확인). 마지막 선택을 기억한다.
+    smoothingCombo_->setCurrentIndex(std::clamp(QSettings().value("stroke/smoothing", 1).toInt(), 0, 3));
+    connect(smoothingCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [](int i) { QSettings().setValue("stroke/smoothing", i); });
     optionsBar_->addWidget(smoothingCombo_);
     optionsBar_->addWidget(new QLabel("데드존"));
     deadZoneSpin_ = new QSpinBox(optionsBar_);
@@ -776,23 +784,33 @@ void MainWindow::attachDocument(app::Document* doc) {
 
 void MainWindow::newDocument() {
     if (!confirmDiscard()) return;
-    bool ok = false;
-    const int w = QInputDialog::getInt(this, "새 문서", "너비(px)", 1920, 1, 16384, 1, &ok);
-    if (!ok) return;
-    const int h = QInputDialog::getInt(this, "새 문서", "높이(px)", 1080, 1, 16384, 1, &ok);
-    if (!ok) return;
+    NewDocumentDialog dlg(this, /*landing=*/false);
+    if (dlg.exec() != QDialog::Accepted) return;
+    createDocumentFromDialog(dlg);
+}
+
+void MainWindow::createDocumentFromDialog(const NewDocumentDialog& dlg) {
     if (app::Document* old = activeDocument()) {
         canvas_->setDocument(nullptr);
         layerPanel_->setDocument(nullptr);
         (void)app_.closeDocument(old, false);
     }
-    Result<app::IDocumentBridge*> made = app_.createDocument(w, h);
+    Result<app::IDocumentBridge*> made = app_.createDocument(dlg.canvasWidth(), dlg.canvasHeight(), dlg.background());
     if (!made.ok()) {
         QMessageBox::warning(this, "새 문서", QString::fromStdString(made.message()));
         attachDocument(activeDocument());
         return;
     }
     attachDocument(static_cast<app::Document*>(made.value()));
+}
+
+void MainWindow::showLanding() {
+    // 시작 화면: 복구할 게 없거나 복구를 안 했으면 새 문서를 묻는다. 취소하면 문서 없이 뜬다 —
+    // 파일 → 새 문서/열기로 시작하면 된다.
+    if (activeDocument() != nullptr) return;
+    NewDocumentDialog dlg(this, /*landing=*/true);
+    if (dlg.exec() != QDialog::Accepted) return;
+    createDocumentFromDialog(dlg);
 }
 
 void MainWindow::openDocument() {

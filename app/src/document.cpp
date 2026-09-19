@@ -70,13 +70,34 @@ void Document::setSelectionMask(SelectionMask m) {
     selectionMask_ = std::move(m);
 }
 
-Result<std::unique_ptr<Document>> Document::create(Size canvasSize, EventHub* events) {
+Result<std::unique_ptr<Document>> Document::create(Size canvasSize, EventHub* events,
+                                                   std::optional<Color8> background) {
     if (canvasSize.isEmpty()) {
         return Err("캔버스 크기가 0 이하다", ErrorCode::InvalidArgument);
     }
     Result<LayerTreePtr> tree = makeLayerTree(canvasSize);
     if (!tree.ok()) {
         return tree.error();
+    }
+    if (background.has_value()) {
+        const Result<LayerPtr> bg = tree.value()->addRaster("배경");
+        if (!bg.ok()) {
+            return bg.error();
+        }
+        const Rect all{0, 0, canvasSize.width, canvasSize.height};
+        ora::Image8 img = ora::Image8::make(all.width, all.height);
+        const Color8 c = *background;
+        for (usize i = 0; i < img.pixels.size(); i += 4) {
+            img.pixels[i] = c.r;
+            img.pixels[i + 1] = c.g;
+            img.pixels[i + 2] = c.b;
+            img.pixels[i + 3] = c.a;
+        }
+        const Result<void> wr = ora::writeRegion(*bg.value()->tiles(), all, img);
+        if (!wr.ok()) {
+            return wr.error();
+        }
+        bg.value()->setLocked(true); // 실수로 배경에 그리지 않게. 잠금 해제는 레이어 패널에서.
     }
     // 레이어 0장으로 시작하면 스크립트가 바로 그릴 수 없다. 한 장 깔아 준다.
     const Result<LayerPtr> first = tree.value()->addRaster("레이어 1");

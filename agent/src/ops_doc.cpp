@@ -155,8 +155,16 @@ Result<Json> docCreate(AgentSession& s, const Json& req) {
     if (w <= 0 || h <= 0 || w > lim.maxCanvas || h > lim.maxCanvas) {
         return Err("캔버스 크기는 1..16384 여야 한다", ErrorCode::InvalidArgument);
     }
+    std::optional<Color8> background;
+    if (!req["background"].isNull()) {
+        const Result<Color8> bg = colorFromJson(req["background"], Color8::rgba(255, 255, 255, 255));
+        if (!bg.ok()) {
+            return bg.error();
+        }
+        background = bg.value();
+    }
     const Result<app::IDocumentBridge*> d =
-        s.application().createDocument(static_cast<i32>(w), static_cast<i32>(h));
+        s.application().createDocument(static_cast<i32>(w), static_cast<i32>(h), background);
     if (!d.ok()) {
         return d.error();
     }

@@ -6,6 +6,7 @@
 #include <mari/app/document.hpp>
 
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -33,6 +34,8 @@ public:
     [[nodiscard]] IDocumentBridge* activeDocument() override;
 
     [[nodiscard]] Result<IDocumentBridge*> createDocument(i32 w, i32 h) override;
+    /// 배경색을 깐 채로 만든다(Document::create 의 background). GUI 새 문서 대화상자가 쓴다.
+    [[nodiscard]] Result<IDocumentBridge*> createDocument(i32 w, i32 h, std::optional<Color8> background);
     /// 지금은 .ora 만 읽는다. 다른 확장자는 Unsupported 다(추측해서 열지 않는다).
     [[nodiscard]] Result<IDocumentBridge*> open(const std::string& path) override;
 

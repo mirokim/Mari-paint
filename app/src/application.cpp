@@ -82,7 +82,11 @@ Result<void> Application::attachRecorderTo(Document& doc, std::string_view hint)
 }
 
 Result<IDocumentBridge*> Application::createDocument(i32 w, i32 h) {
-    Result<std::unique_ptr<Document>> doc = Document::create(Size{w, h}, &events_);
+    return createDocument(w, h, std::nullopt);
+}
+
+Result<IDocumentBridge*> Application::createDocument(i32 w, i32 h, std::optional<Color8> background) {
+    Result<std::unique_ptr<Document>> doc = Document::create(Size{w, h}, &events_, background);
     if (!doc.ok()) {
         return doc.error();
     }

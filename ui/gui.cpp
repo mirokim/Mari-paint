@@ -142,9 +142,10 @@ QStatusBar::item { border: none; }
     }
     app.setVisible(true);
 
-    // 빈 캔버스로 시작한다. 실패하면(저널을 못 열었다 등) 문서 없이 뜨고 창이 이유를 보여 준다.
+    // 문서는 미리 만들지 않는다 — MainWindow 의 시작 화면(새 문서 대화상자)이 크기·배경을 묻는다.
+    // MARI_GUI_PREDOC=1 이면 옛날처럼 1920×1080 투명 문서로 바로 뜬다(진단·자동화용).
     QString startupError;
-    if (!qEnvironmentVariableIsSet("MARI_GUI_NODOC")) { // 진단용 토글
+    if (qEnvironmentVariableIsSet("MARI_GUI_PREDOC")) {
         const Result<app::IDocumentBridge*> first = app.createDocument(1920, 1080);
         if (!first.ok()) {
             startupError = QString::fromStdString(first.message());

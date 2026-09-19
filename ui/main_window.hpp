@@ -37,6 +37,7 @@ class CanvasWidget;
 class ColorPanel;
 class LayerPanel;
 class Navigator;
+class NewDocumentDialog;
 class PopupPalette;
 class BrushPanel;
 class HistoryPanel;
@@ -67,6 +68,8 @@ private:
     void attachDocument(app::Document* doc);
 
     void newDocument();
+    void createDocumentFromDialog(const NewDocumentDialog& dlg);
+    void showLanding();
     void openDocument();
     bool saveDocument(bool forceDialog);
     bool confirmDiscard();

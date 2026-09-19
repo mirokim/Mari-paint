@@ -26,6 +26,8 @@ set(MARI_UI_SOURCES
     color_wheel.hpp
     color_modes.cpp
     color_modes.hpp
+    new_document_dialog.cpp
+    new_document_dialog.hpp
     color_panel.cpp
     color_panel.hpp
     layer_panel.cpp

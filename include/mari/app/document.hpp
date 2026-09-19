@@ -11,6 +11,7 @@
 #include <mari/core/undo.hpp>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace mari::app {
@@ -23,8 +24,11 @@ public:
     /// 빈 문서를 만든다. 래스터 레이어 한 장("레이어 1")이 들어간 상태로 시작한다 —
     /// 레이어가 0장인 문서는 스크립트가 바로 그릴 수 없어서 쓸모가 없다.
     /// `events` 는 소유하지 않는다. nullptr 이면 이벤트를 쏘지 않는다.
+    /// `background` 를 주면 그 색으로 채운 잠긴 "배경" 레이어를 맨 아래 깐다(포토샵 배경 · CSP 용지).
+    /// 기록기가 붙기 전이라 획·연산으로 남지 않는다 — 문서의 초기 상태다. 주지 않으면 투명.
     [[nodiscard]] static Result<std::unique_ptr<Document>> create(Size canvasSize,
-                                                                  EventHub* events = nullptr);
+                                                                  EventHub* events = nullptr,
+                                                                  std::optional<Color8> background = std::nullopt);
     /// 이미 만들어진 트리를 감싼다(.ora 를 읽은 뒤에 쓴다).
     [[nodiscard]] static Result<std::unique_ptr<Document>> adopt(LayerTreePtr tree,
                                                                  std::string path,

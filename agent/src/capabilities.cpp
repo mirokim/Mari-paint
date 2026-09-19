@@ -30,7 +30,9 @@ std::vector<OpSpec> makeTable() {
                        true,
                        ViewMode::None,
                        {P{"width", "int", true, "캔버스 폭(px). 1..16384"},
-                        P{"height", "int", true, "캔버스 높이(px). 1..16384"}},
+                        P{"height", "int", true, "캔버스 높이(px). 1..16384"},
+                        P{"background", "color", false,
+                          "배경색(#rrggbb). 주면 그 색으로 채운 잠긴 '배경' 레이어를 맨 아래 깐다. 없으면 투명"}},
                        &ops::docCreate});
     t.push_back(OpSpec{"doc.open",
                        "doc",

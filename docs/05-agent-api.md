@@ -243,7 +243,7 @@ Mari + Sigan은 이걸 줄 수 있는 유일한 조합이 된다.
 
 | 영역 | 연산 | 비고 |
 |---|---|---|
-| 문서 | `doc.create` `doc.open` `doc.save` `doc.close` `doc.describe` `capabilities` | `doc.open`/`doc.save` 는 `.ora`(저장은 `.png` 도). `.psd` 는 없다 |
+| 문서 | `doc.create` `doc.open` `doc.save` `doc.close` `doc.describe` `capabilities` | `doc.open`/`doc.save` 는 `.ora`(저장은 `.png` 도). `.psd` 는 없다. `doc.create` 에 `background:"#rrggbb"` 를 주면 그 색으로 채운 잠긴 "배경" 레이어가 맨 아래 깔린다(GUI 새 문서의 흰 배경과 같은 것). 없으면 투명 |
 | 스냅샷 | `snapshot` `restore` `branch` `diff` | |
 | 레이어 | `layer.list` `layer.add` `layer.remove` `layer.move` `layer.duplicate` `layer.merge` `layer.setProps` | |
 | 그리기 | `stroke` `fill` `erase` `gradient` `transform` | `transform` 은 **정수 평행이동만.** `scale`/`rotate` 는 리샘플러가 없어 거절한다 |
