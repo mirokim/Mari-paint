@@ -112,8 +112,11 @@ void StrokePipeline::end() noexcept {
             }
         }
     }
+    {
+        Sink sink(engine_, dirty_);
+        interp_.finish(*engine_, sink); // 한 샘플 늦게 그리므로 마지막 구간은 여기서 나온다
+    }
     engine_->endStroke(dirty_);
-    interp_.finish();
     active_ = false;
     dirtyClean_ = false;
 }

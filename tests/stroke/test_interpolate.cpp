@@ -63,6 +63,7 @@ MARI_TEST(interpolate_places_stamps_at_spacing) {
 
     it.begin(sampleAt(0, 0), engine, rec);
     it.push(sampleAt(100, 0), engine, rec);
+    it.finish(engine, rec); // 한 샘플 늦게 그리므로 마지막 구간은 finish 가 뱉는다
 
     // 시작점 1개 + 10px 마다 10개 = 11개.
     CHECK_EQ(rec.stamps.size(), 11u);
@@ -83,6 +84,7 @@ MARI_TEST(interpolate_spacing_carries_across_segments) {
     it.push(sampleAt(10, 0), engine, rec);
     it.push(sampleAt(20, 0), engine, rec);
     it.push(sampleAt(30, 0), engine, rec);
+    it.finish(engine, rec);
 
     CHECK(rec.stamps.size() >= 4u);
     for (usize i = 1; i < rec.stamps.size(); ++i)
@@ -97,6 +99,7 @@ MARI_TEST(interpolate_spacing_follows_pressure) {
     StrokeInterpolator it;
     it.begin(sampleAt(0, 0, 1.0f), engine, rec);
     it.push(sampleAt(200, 0, 0.1f), engine, rec);
+    it.finish(engine, rec);
 
     CHECK(rec.stamps.size() > 11u); // 균일 20px 이면 11개, 가늘어지므로 더 많다
     const f32 first = dist(rec.stamps[0].pos, rec.stamps[1].pos);
@@ -118,6 +121,7 @@ MARI_TEST(interpolate_carries_pressure_and_tilt) {
 
     it.begin(a, engine, rec);
     it.push(b, engine, rec);
+    it.finish(engine, rec);
     CHECK_EQ(rec.stamps.size(), 11u);
 
     // 필압·틸트·시간이 위치와 같이 따라 올라가야 한다.
@@ -144,6 +148,7 @@ MARI_TEST(interpolate_fade_reaches_one_after_fade_length) {
 
     it.begin(sampleAt(0, 0), engine, rec);
     it.push(sampleAt(100, 0), engine, rec);
+    it.finish(engine, rec);
     CHECK_NEAR(rec.stamps.front().fade, 0.0f, 1e-6);
     CHECK_NEAR(rec.stamps[5].fade, 1.0f, 1e-6); // 50px 지점
     CHECK_NEAR(rec.stamps.back().fade, 1.0f, 1e-6);
@@ -155,7 +160,7 @@ MARI_TEST(interpolate_single_point_still_makes_a_dot) {
     Recorder rec;
     StrokeInterpolator it;
     it.begin(sampleAt(5, 7), engine, rec);
-    it.finish();
+    it.finish(engine, rec);
     CHECK_EQ(rec.stamps.size(), 1u);
     CHECK_NEAR(rec.stamps[0].pos.x, 5.0f, 1e-6);
     CHECK_NEAR(rec.stamps[0].pos.y, 7.0f, 1e-6);
@@ -170,12 +175,45 @@ MARI_TEST(interpolate_curve_bulges_off_the_chord) {
     it.begin(sampleAt(0, 0), engine, rec);
     it.push(sampleAt(50, 50), engine, rec);
     it.push(sampleAt(100, 0), engine, rec);
+    it.finish(engine, rec);
 
     f32 maxOff = 0.0f;
     for (const auto& st : rec.stamps)
         if (st.pos.x > 60.0f && st.pos.x < 90.0f)
             maxOff = std::max(maxOff, st.pos.y - (100.0f - st.pos.x)); // 현(chord) 위쪽
     CHECK(maxOff > 1.0f);
+}
+
+MARI_TEST(interpolate_waits_one_sample_then_is_tangent_continuous) {
+    // push 직후엔 마지막 구간이 아직 없다(다음 점이 뒤쪽 제어점이 된다). finish 가 채운다.
+    SpacingOnlyEngine engine(2.0f);
+    Recorder rec;
+    StrokeInterpolator it;
+    it.begin(sampleAt(0, 0), engine, rec);
+    it.push(sampleAt(50, 0), engine, rec);
+    CHECK_EQ(rec.stamps.size(), 1u); // 첫 점만
+    it.push(sampleAt(100, 0), engine, rec);
+    CHECK(rec.stamps.size() > 1u);   // 0→50 구간이 나왔다
+    CHECK(rec.stamps.back().pos.x <= 50.0f + 1e-3f);
+    it.finish(engine, rec);
+    CHECK_NEAR(rec.stamps.back().pos.x, 100.0f, 0.05);
+
+    // 원 위의 점 24개를 넣으면 이음새에서 방향이 갑자기 꺾이지 않아야 한다(외삽 시절엔 24각형).
+    Recorder circ;
+    StrokeInterpolator it2;
+    const f32 r = 100.0f;
+    auto at = [&](int i) {
+        const f32 a = static_cast<f32>(i) * 6.2831853f / 24.0f;
+        return sampleAt(r * std::cos(a), r * std::sin(a));
+    };
+    it2.begin(at(0), engine, circ);
+    for (int i = 1; i <= 24; ++i)
+        it2.push(at(i), engine, circ);
+    it2.finish(engine, circ);
+    f32 maxRadiusErr = 0.0f;
+    for (const auto& st : circ.stamps)
+        maxRadiusErr = std::max(maxRadiusErr, std::abs(std::sqrt(st.pos.x * st.pos.x + st.pos.y * st.pos.y) - r));
+    CHECK(maxRadiusErr < 0.6f); // 외삽 방식은 이음새 근처에서 2px 넘게 벗어난다
 }
 
 MARI_TEST(catmull_rom_passes_through_control_points) {

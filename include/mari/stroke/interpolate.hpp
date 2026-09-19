@@ -51,11 +51,15 @@ public:
     /// 스트로크 시작. 시작점에 스탬프 하나를 찍는다(펜을 대고 떼면 점 하나가 남아야 한다).
     void begin(const InputSample& first, const brush::IBrushEngine& engine,
                IStampSink& sink) noexcept;
-    /// 샘플 하나를 더한다. 직전 샘플 → 이 샘플 구간을 spacing 간격으로 채워 sink 에 흘린다.
+    /// 샘플 하나를 더한다. **한 샘플 늦게** 그린다 — 이 샘플은 그 앞 구간(직전 두 샘플 사이)의
+    /// 뒤쪽 제어점이 되고, 그 구간을 spacing 간격으로 채워 sink 에 흘린다.
+    /// 🔴 뒤쪽 제어점을 직선으로 외삽해 즉시 그리면 이음새마다 접선이 어긋나 획이 각진다
+    ///    (실측: 15° 간격 원이 24각형으로 보였다). 펜 이력이 한 메시지에 여러 점을 주므로
+    ///    체감 지연은 샘플 하나(수 ms)뿐이다.
     void push(const InputSample& s, const brush::IBrushEngine& engine,
               IStampSink& sink) noexcept;
-    /// 스트로크 종료. 마지막 구간은 push() 에서 이미 그렸으므로 여기선 상태만 닫는다.
-    void finish() noexcept;
+    /// 스트로크 종료. 아직 안 그린 마지막 구간을 외삽 제어점으로 마저 그리고 상태를 닫는다.
+    void finish(const brush::IBrushEngine& engine, IStampSink& sink) noexcept;
 
     /// 지금까지 이동한 스플라인 길이(px).
     [[nodiscard]] f32 traveledPx() const noexcept { return traveled_; }
@@ -66,10 +70,16 @@ public:
 
 private:
     void emit(const InputSample& s, IStampSink& sink) noexcept;
+    /// p1→p2 구간을 그린다. p0·p3 는 접선용 제어점.
+    void segment(const PointF& p0, const InputSample& p1, const InputSample& p2, const PointF& p3,
+                 const brush::IBrushEngine& engine, IStampSink& sink) noexcept;
 
     InterpolateConfig cfg_{};
-    InputSample prevPrev_{};
-    InputSample prev_{};
+    /// 최근 샘플 셋. s2_ 가 가장 새것이고, s1_→s2_ 구간은 아직 안 그린 상태다.
+    InputSample s0_{};
+    InputSample s1_{};
+    InputSample s2_{};
+    usize count_ = 0; ///< 받은 샘플 수
     f32 traveled_ = 0.0f;
     f32 pending_ = 0.0f; ///< 다음 스탬프까지 남은 거리
     usize emitted_ = 0;

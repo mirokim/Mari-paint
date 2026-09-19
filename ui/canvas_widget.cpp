@@ -262,7 +262,11 @@ void CanvasWidget::renderViewCache() {
     if (doc_ != nullptr && !backing_.isNull()) {
         const QTransform t = canvasToWidget();
         p.setTransform(t);
-        p.setRenderHint(QPainter::SmoothPixmapTransform, view_.state().zoom < 1.0);
+        // 정수 배율(100·200·300%…)만 픽셀을 그대로 찍는다. 137% 같은 어중간한 배율을 최근접으로
+        // 찍으면 픽셀이 1칸·2칸 섞여 선이 울퉁불퉁 찌그러져 보인다(실측). 축소도 마찬가지로 보간.
+        const f64 z = view_.state().zoom;
+        const bool integerZoom = z >= 1.0 && std::abs(z - std::round(z)) < 1e-3;
+        p.setRenderHint(QPainter::SmoothPixmapTransform, !integerZoom);
         // 더러운 영역만큼만 캔버스를 그린다. 정수 정렬 + 1px 여유: 소수 소스 사각형은 이음새를 만든다.
         const QRectF visibleCanvas = QRectF(
             t.inverted().mapRect(QRectF(bounds)).toAlignedRect().adjusted(-1, -1, 1, 1).intersected(backing_.rect()));

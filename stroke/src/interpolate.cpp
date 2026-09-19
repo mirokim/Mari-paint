@@ -101,8 +101,10 @@ void StrokeInterpolator::emit(const InputSample& s, IStampSink& sink) noexcept {
 
 void StrokeInterpolator::begin(const InputSample& first, const brush::IBrushEngine& engine,
                                IStampSink& sink) noexcept {
-    prevPrev_ = first;
-    prev_ = first;
+    s0_ = first;
+    s1_ = first;
+    s2_ = first;
+    count_ = 1;
     traveled_ = 0.0f;
     emitted_ = 0;
     started_ = true;
@@ -121,13 +123,32 @@ void StrokeInterpolator::push(const InputSample& s, const brush::IBrushEngine& e
         begin(s, engine, sink);
         return;
     }
+    // 이 샘플이 뒤쪽 제어점이 되어 s1_→s2_ 구간이 비로소 그려진다. 두 번째 샘플까지는
+    // 구간이 없으니(s1_==s2_==첫 점) 밀어 넣기만 한다.
+    if (count_ >= 2)
+        segment(s0_.pos, s1_, s2_, s.pos, engine, sink);
+    s0_ = s1_;
+    s1_ = s2_;
+    s2_ = s;
+    ++count_;
+}
 
-    // 뒤쪽 제어점은 **외삽**한다. 다음 샘플을 기다리지 않으려고(지연 = 품질).
-    const PointF p3{s.pos.x + (s.pos.x - prev_.pos.x), s.pos.y + (s.pos.y - prev_.pos.y)};
+void StrokeInterpolator::finish(const brush::IBrushEngine& engine, IStampSink& sink) noexcept {
+    if (started_ && count_ >= 2) {
+        // 마지막 구간엔 다음 점이 없다. 여기서만 직선으로 외삽한다.
+        const PointF p3{s2_.pos.x + (s2_.pos.x - s1_.pos.x), s2_.pos.y + (s2_.pos.y - s1_.pos.y)};
+        segment(s0_.pos, s1_, s2_, p3, engine, sink);
+    }
+    started_ = false;
+}
+
+void StrokeInterpolator::segment(const PointF& p0, const InputSample& p1, const InputSample& p2,
+                                 const PointF& p3, const brush::IBrushEngine& engine,
+                                 IStampSink& sink) noexcept {
     Spline spline;
-    spline.build(prevPrev_.pos, prev_.pos, s.pos, p3);
+    spline.build(p0, p1.pos, p2.pos, p3);
 
-    const f32 chord = dist(prev_.pos, s.pos);
+    const f32 chord = dist(p1.pos, p2.pos);
     const f32 stepLen = std::max(cfg_.minSpacingPx * 0.5f, 0.25f);
     const int steps = std::clamp(static_cast<int>(std::ceil(chord / stepLen)), 4, kMaxSteps);
 
@@ -161,13 +182,13 @@ void StrokeInterpolator::push(const InputSample& s, const brush::IBrushEngine& e
             const f32 u = std::clamp(target * invTotal, 0.0f, 1.0f);
             InputSample cur{};
             cur.pos = pos;
-            cur.pressure = std::clamp(lerpf(prev_.pressure, s.pressure, u), 0.0f, 1.0f);
-            cur.tiltX = lerpf(prev_.tiltX, s.tiltX, u);
-            cur.tiltY = lerpf(prev_.tiltY, s.tiltY, u);
-            cur.azimuthDeg = lerpDeg(prev_.azimuthDeg, s.azimuthDeg, u);
-            cur.rotationDeg = lerpDeg(prev_.rotationDeg, s.rotationDeg, u);
-            cur.velocity = lerpf(prev_.velocity, s.velocity, u);
-            cur.timeMs = prev_.timeMs + (s.timeMs - prev_.timeMs) * static_cast<f64>(u);
+            cur.pressure = std::clamp(lerpf(p1.pressure, p2.pressure, u), 0.0f, 1.0f);
+            cur.tiltX = lerpf(p1.tiltX, p2.tiltX, u);
+            cur.tiltY = lerpf(p1.tiltY, p2.tiltY, u);
+            cur.azimuthDeg = lerpDeg(p1.azimuthDeg, p2.azimuthDeg, u);
+            cur.rotationDeg = lerpDeg(p1.rotationDeg, p2.rotationDeg, u);
+            cur.velocity = lerpf(p1.velocity, p2.velocity, u);
+            cur.timeMs = p1.timeMs + (p2.timeMs - p1.timeMs) * static_cast<f64>(u);
 
             traveled_ = segStart + target;
             emit(cur, sink);
@@ -180,11 +201,6 @@ void StrokeInterpolator::push(const InputSample& s, const brush::IBrushEngine& e
         pending_ = std::max(target - total, 0.0f);
         traveled_ = segStart + total;
     }
-
-    prevPrev_ = prev_;
-    prev_ = s;
 }
-
-void StrokeInterpolator::finish() noexcept { started_ = false; }
 
 } // namespace mari::stroke
