@@ -70,49 +70,6 @@ private:
     std::unique_ptr<TileSnapshotCommand> pixels_;
 };
 
-/// 여러 명령을 하나로. undo 는 역순.
-class CompoundCommand final : public UndoCommand {
-public:
-    explicit CompoundCommand(std::string text) : text_(std::move(text)) {}
-    void add(UndoCommandPtr c) { cmds_.push_back(std::move(c)); }
-    [[nodiscard]] bool empty() const { return cmds_.empty(); }
-    [[nodiscard]] const std::string& text() const override { return text_; }
-    [[nodiscard]] Result<void> undo() override {
-        for (auto it = cmds_.rbegin(); it != cmds_.rend(); ++it) {
-            const Result<void> r = (*it)->undo();
-            if (!r.ok()) return r;
-        }
-        return Ok();
-    }
-    [[nodiscard]] Result<void> redo() override {
-        for (auto& c : cmds_) {
-            const Result<void> r = c->redo();
-            if (!r.ok()) return r;
-        }
-        return Ok();
-    }
-    void affectedTiles(DirtyTiles& out) const override {
-        for (const auto& c : cmds_) c->affectedTiles(out);
-    }
-
-private:
-    std::string text_;
-    std::vector<UndoCommandPtr> cmds_;
-};
-
-/// undo/redo 를 뒤집는다(레이어 "추가" = 분리의 반대).
-class InverseCommand final : public UndoCommand {
-public:
-    explicit InverseCommand(UndoCommandPtr inner) : inner_(std::move(inner)) {}
-    [[nodiscard]] const std::string& text() const override { return inner_->text(); }
-    [[nodiscard]] Result<void> undo() override { return inner_->redo(); }
-    [[nodiscard]] Result<void> redo() override { return inner_->undo(); }
-    void affectedTiles(DirtyTiles& out) const override { inner_->affectedTiles(out); }
-
-private:
-    UndoCommandPtr inner_;
-};
-
 /// 마스크 교체 명령(before/after 타일맵 포인터 — COW 라 값싸다).
 class MaskSwapCommand final : public UndoCommand {
 public:

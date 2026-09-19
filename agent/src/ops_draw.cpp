@@ -11,6 +11,7 @@
 
 #include <mari/app/document.hpp>
 #include <mari/agent/address.hpp>
+#include <mari/app/image_ops.hpp>
 #include <mari/app/layer_commands.hpp>
 #include <mari/app/live_stroke.hpp>
 #include <mari/app/stroke_entry.hpp>
@@ -784,84 +785,159 @@ Result<Json> gradient(AgentSession& s, const Json& req) {
 }
 
 Result<Json> transform(AgentSession& s, const Json& req) {
-    if (req.has("scale") || req.has("rotate")) {
-        // 🔴 리샘플링 경로가 없다. 있는 척하고 대충 하면 결과가 뭉개진다.
-        return Err("지금은 정수 평행이동(dx, dy)만 된다. 확대·회전은 리샘플러가 들어와야 한다",
-                   ErrorCode::Unsupported);
-    }
     const Result<app::Document*> d = s.requireDocument();
     if (!d.ok()) {
         return d.error();
     }
     app::Document* doc = d.value();
-    const Result<void> okRec = requireRecording(*doc);
-    if (!okRec.ok()) {
-        return okRec.error();
-    }
     const Result<LayerPtr> layer = paintTarget(s, req, *doc);
     if (!layer.ok()) {
         return layer.error();
     }
-    const i64 dx = req["dx"].asInt(0);
-    const i64 dy = req["dy"].asInt(0);
-    if (dx == 0 && dy == 0) {
-        Json out = Json::object();
-        out.set("layer", Json::integer(layer.value()->id()));
-        out.set("moved", jsonRect(Rect{}));
-        return Ok(std::move(out));
+    app::TransformParams p;
+    p.dx = req["dx"].asNumber(0.0);
+    p.dy = req["dy"].asNumber(0.0);
+    if (req.has("scale")) {
+        p.scaleX = p.scaleY = req["scale"].asNumber(1.0);
     }
-    if (std::abs(dx) > 100000 || std::abs(dy) > 100000) {
-        return Err("이동량이 너무 크다", ErrorCode::InvalidArgument);
+    if (req.has("scaleX")) p.scaleX = req["scaleX"].asNumber(1.0);
+    if (req.has("scaleY")) p.scaleY = req["scaleY"].asNumber(1.0);
+    p.rotateDeg = req["rotate"].asNumber(0.0);
+    p.flipH = req["flipH"].asBool(false);
+    p.flipV = req["flipV"].asBool(false);
+    p.bilinear = req["interpolation"].asString() != "nearest";
+    if (req["pivot"].isArray() && req["pivot"].size() == 2) {
+        p.usePivot = true;
+        p.pivotX = req["pivot"].at(0).asNumber();
+        p.pivotY = req["pivot"].at(1).asNumber();
     }
+    if (std::abs(p.dx) > 100000 || std::abs(p.dy) > 100000 || std::fabs(p.scaleX) > 64.0 || std::fabs(p.scaleY) > 64.0) {
+        return Err("변형량이 너무 크다", ErrorCode::InvalidArgument);
+    }
+    // 🔴 GUI 의 자유 변형과 같은 함수. 선택이 있으면 선택 안만 옮긴다.
+    const Result<Rect> r = app::transformLayer(*doc, s.strokeSource(), layer.value()->id(), p);
+    if (!r.ok()) {
+        return r.error();
+    }
+    s.noteDirty(r.value());
+    s.countRegionOp();
+    Json out = Json::object();
+    out.set("layer", Json::integer(layer.value()->id()));
+    out.set("area", jsonRect(r.value()));
+    out.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Transform)));
+    out.set("recorded", Json::boolean(doc->recorder() != nullptr));
+    return Ok(std::move(out));
+}
 
-    const Rect src = layer.value()->tiles()->bounds();
-    if (src.isEmpty()) {
-        Json out = Json::object();
-        out.set("layer", Json::integer(layer.value()->id()));
-        out.set("moved", jsonRect(Rect{}));
-        return Ok(std::move(out));
+/// 색 보정 — GUI 의 이미지 › 보정 과 같은 함수.
+Result<Json> adjust(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
     }
-    const Rect dst{src.x + static_cast<i32>(dx), src.y + static_cast<i32>(dy), src.width,
-                   src.height};
-    const Rect uni = src.united(dst);
+    app::Document* doc = d.value();
+    const Result<LayerPtr> layer = paintTarget(s, req, *doc);
+    if (!layer.ok()) {
+        return layer.error();
+    }
+    const std::string kind = req["kind"].isString() ? req["kind"].asString() : std::string();
+    app::AdjustParams p;
+    if (kind == "hsl" || kind == "hueSaturation") p.kind = app::AdjustKind::HueSaturation;
+    else if (kind == "brightnessContrast") p.kind = app::AdjustKind::BrightnessContrast;
+    else if (kind == "levels") p.kind = app::AdjustKind::Levels;
+    else if (kind == "curves") p.kind = app::AdjustKind::Curves;
+    else if (kind == "invert") p.kind = app::AdjustKind::Invert;
+    else if (kind == "desaturate") p.kind = app::AdjustKind::Desaturate;
+    else if (kind == "threshold") p.kind = app::AdjustKind::Threshold;
+    else if (kind == "posterize") p.kind = app::AdjustKind::Posterize;
+    else return Err("kind 는 hsl|brightnessContrast|levels|curves|invert|desaturate|threshold|posterize 중 하나다", ErrorCode::InvalidArgument);
+    p.hue = static_cast<f32>(req["hue"].asNumber(0.0));
+    p.saturation = static_cast<f32>(req["saturation"].asNumber(0.0));
+    p.lightness = static_cast<f32>(req["lightness"].asNumber(0.0));
+    p.brightness = static_cast<f32>(req["brightness"].asNumber(0.0));
+    p.contrast = static_cast<f32>(req["contrast"].asNumber(0.0));
+    p.inBlack = static_cast<i32>(req["inBlack"].asInt(0));
+    p.inWhite = static_cast<i32>(req["inWhite"].asInt(255));
+    p.outBlack = static_cast<i32>(req["outBlack"].asInt(0));
+    p.outWhite = static_cast<i32>(req["outWhite"].asInt(255));
+    p.gamma = static_cast<f32>(req["gamma"].asNumber(1.0));
+    p.threshold = static_cast<i32>(req["threshold"].asInt(128));
+    p.levels = static_cast<i32>(req["levels"].asInt(4));
+    const auto curveOf = [](const Json& arr, std::vector<app::CurvePt>& out) {
+        for (usize i = 0; i < arr.size(); ++i) {
+            const Json& pt = arr.at(i);
+            if (pt.isArray() && pt.size() == 2)
+                out.push_back({static_cast<f32>(pt.at(0).asNumber()), static_cast<f32>(pt.at(1).asNumber())});
+        }
+    };
+    curveOf(req["curve"], p.curve);
+    curveOf(req["curveR"], p.curveR);
+    curveOf(req["curveG"], p.curveG);
+    curveOf(req["curveB"], p.curveB);
+    const Result<u32> r = app::adjustLayer(*doc, s.strokeSource(), layer.value()->id(), p);
+    if (!r.ok()) {
+        return r.error();
+    }
+    const Size cs = doc->canvasSize();
+    s.noteDirty(Rect{0, 0, cs.width, cs.height});
+    s.countRegionOp();
+    s.countChangedTiles(r.value());
+    Json out = Json::object();
+    out.set("layer", Json::integer(layer.value()->id()));
+    out.set("kind", Json::string(kind));
+    out.set("changedTiles", Json::integer(static_cast<i64>(r.value())));
+    out.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Adjust)));
+    return Ok(std::move(out));
+}
 
-    Result<ora::Image8> got = ora::readRegion(*layer.value()->tiles(), src);
-    if (!got.ok()) {
-        return got.error();
+/// 캔버스 연산: flip | rotate | resize | crop | scale — 모든 레이어, 실행취소 하나.
+Result<Json> canvasOp(AgentSession& s, const Json& req) {
+    const Result<app::Document*> d = s.requireDocument();
+    if (!d.ok()) {
+        return d.error();
     }
-    // 합집합 영역을 통째로 새로 쓴다 — 실행취소 한 칸으로 끝난다.
-    ora::Image8 out = ora::Image8::make(uni.width, uni.height);
-    for (i32 y = 0; y < src.height; ++y) {
-        const u8* srcRow = got.value().pixels.data() + static_cast<usize>(y) * got.value().stride();
-        const i32 ty = dst.y + y - uni.y;
-        u8* dstRow = out.pixels.data() + static_cast<usize>(ty) * out.stride() +
-                     static_cast<usize>(dst.x - uni.x) * 4u;
-        std::copy(srcRow, srcRow + static_cast<usize>(src.width) * 4u, dstRow);
+    app::Document* doc = d.value();
+    const std::string action = req["action"].isString() ? req["action"].asString() : std::string();
+    Result<void> r = Ok();
+    if (action == "flip") {
+        r = app::flipCanvas(*doc, s.strokeSource(), req["axis"].asString() != "vertical");
+    } else if (action == "rotate") {
+        const i64 deg = req["degrees"].asInt(90);
+        if (deg % 90 != 0) return Err("degrees 는 90 의 배수다", ErrorCode::InvalidArgument);
+        r = app::rotateCanvas(*doc, s.strokeSource(), static_cast<int>(deg / 90));
+    } else if (action == "resize" || action == "scale") {
+        const i64 w = req["width"].asInt(0), h = req["height"].asInt(0);
+        if (w <= 0 || h <= 0 || w > 32768 || h > 32768) return Err("width/height 가 범위 밖이다", ErrorCode::InvalidArgument);
+        if (action == "resize")
+            r = app::resizeCanvas(*doc, s.strokeSource(), Size{static_cast<i32>(w), static_cast<i32>(h)},
+                                  static_cast<int>(req["anchorX"].asInt(1)), static_cast<int>(req["anchorY"].asInt(1)));
+        else
+            r = app::scaleImage(*doc, s.strokeSource(), Size{static_cast<i32>(w), static_cast<i32>(h)});
+    } else if (action == "crop") {
+        Rect area;
+        if (req.has("region")) {
+            const Result<Rect> reg = paintRegion(s, req, *doc);
+            if (!reg.ok()) return reg.error();
+            area = reg.value();
+        } else {
+            area = doc->selectionMask().isAll() ? Rect{} : doc->selectionMask().bounds();
+            if (area.isEmpty()) return Err("crop 은 region 이나 선택이 필요하다", ErrorCode::InvalidArgument);
+        }
+        r = app::cropCanvas(*doc, s.strokeSource(), area);
+    } else {
+        return Err("action 은 flip|rotate|resize|scale|crop 중 하나다", ErrorCode::InvalidArgument);
     }
-    u32 changed = 0;
-    const Result<void> w =
-        writeRegionWithUndo(*doc, layer.value()->id(), uni, out, "에이전트 이동", changed);
-    if (!w.ok()) {
-        return w.error();
+    if (!r.ok()) {
+        return r.error();
     }
-    // 🔴 이동도 **영역을 직접 쓴다.** 붓질이 아니지만 픽셀이 바뀌었으므로 기록에 남는다 —
-    //    기록 밖에서 바뀐 픽셀이 있으면 그 .ora 의 prooflog 가 캔버스를 설명하지 못한다
-    //    (docs/06 결정 ① "앞으로 생길 모든 영역 직접쓰기" · 6절 H1).
-    const Result<void> rec = finishRegionOp(s, *doc, RegionOpKind::Transform, uni,
-                                            layer.value()->id(), false, changed);
-    if (!rec.ok()) {
-        return rec.error();
-    }
-
-    Json res = Json::object();
-    res.set("layer", Json::integer(layer.value()->id()));
-    res.set("from", jsonRect(src));
-    res.set("to", jsonRect(dst));
-    res.set("moved", jsonRect(uni));
-    res.set("regionOp", Json::string(regionOpKindName(RegionOpKind::Transform)));
-    res.set("changedTiles", Json::integer(static_cast<i64>(changed)));
-    res.set("recorded", Json::boolean(doc->recorder() != nullptr));
-    return Ok(std::move(res));
+    s.roles();
+    const Size cs = doc->canvasSize();
+    s.noteDirty(Rect{0, 0, cs.width, cs.height});
+    s.countRegionOp();
+    Json out = Json::object();
+    out.set("action", Json::string(action));
+    out.set("canvas", jsonRect(Rect{0, 0, cs.width, cs.height}));
+    return Ok(std::move(out));
 }
 
 } // namespace mari::agent::ops

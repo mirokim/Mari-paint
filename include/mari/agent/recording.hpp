@@ -44,6 +44,8 @@ enum class RegionOpKind : u8 {
     /// `transform` — 픽셀을 옮겨 쓴다. 붓질이 아니고 영역을 직접 쓰므로 여기 속한다
     /// (docs/06 결정 ① "앞으로 생길 모든 영역 직접쓰기"). 값은 **꼬리에만** 더했다.
     Transform = 4,
+    /// `adjust` — 색 보정. 값은 꼬리에만 더한다.
+    Adjust = 5,
 };
 
 /// 안정 문자열. 등급이 아니라 연산 이름이다.
@@ -57,6 +59,8 @@ enum class RegionOpKind : u8 {
         return "gradient";
     case RegionOpKind::Transform:
         return "transform";
+    case RegionOpKind::Adjust:
+        return "adjust";
     }
     return "unknown";
 }

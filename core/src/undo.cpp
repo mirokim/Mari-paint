@@ -169,3 +169,30 @@ void UndoStack::setLimit(usize limit) {
 }
 
 } // namespace mari
+
+namespace mari {
+
+Result<void> CompoundCommand::undo() {
+    for (auto it = cmds_.rbegin(); it != cmds_.rend(); ++it) {
+        const Result<void> r = (*it)->undo();
+        if (!r.ok())
+            return r;
+    }
+    return Ok();
+}
+
+Result<void> CompoundCommand::redo() {
+    for (auto& c : cmds_) {
+        const Result<void> r = c->redo();
+        if (!r.ok())
+            return r;
+    }
+    return Ok();
+}
+
+void CompoundCommand::affectedTiles(DirtyTiles& out) const {
+    for (const auto& c : cmds_)
+        c->affectedTiles(out);
+}
+
+} // namespace mari

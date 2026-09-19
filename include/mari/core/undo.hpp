@@ -74,6 +74,36 @@ private:
     std::vector<Entry> entries_;
 };
 
+/// 여러 명령을 하나로 묶는다. undo 는 역순, redo 는 순서대로.
+class CompoundCommand final : public UndoCommand {
+public:
+    explicit CompoundCommand(std::string text) : text_(std::move(text)) {}
+    void add(UndoCommandPtr c) { cmds_.push_back(std::move(c)); }
+    [[nodiscard]] bool empty() const { return cmds_.empty(); }
+    [[nodiscard]] usize size() const { return cmds_.size(); }
+    [[nodiscard]] const std::string& text() const override { return text_; }
+    [[nodiscard]] Result<void> undo() override;
+    [[nodiscard]] Result<void> redo() override;
+    void affectedTiles(DirtyTiles& out) const override;
+
+private:
+    std::string text_;
+    std::vector<UndoCommandPtr> cmds_;
+};
+
+/// undo/redo 를 뒤집는다("추가" = "분리"의 반대 같은 경우).
+class InverseCommand final : public UndoCommand {
+public:
+    explicit InverseCommand(UndoCommandPtr inner) : inner_(std::move(inner)) {}
+    [[nodiscard]] const std::string& text() const override { return inner_->text(); }
+    [[nodiscard]] Result<void> undo() override { return inner_->redo(); }
+    [[nodiscard]] Result<void> redo() override { return inner_->undo(); }
+    void affectedTiles(DirtyTiles& out) const override { inner_->affectedTiles(out); }
+
+private:
+    UndoCommandPtr inner_;
+};
+
 /// 실행취소 스택. 한도를 넘으면 가장 오래된 것부터 버린다.
 class UndoStack {
 public:

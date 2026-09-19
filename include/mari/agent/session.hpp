@@ -264,6 +264,8 @@ Result<Json> bucket(AgentSession&, const Json&);
 Result<Json> erase(AgentSession&, const Json&);
 Result<Json> gradient(AgentSession&, const Json&);
 Result<Json> transform(AgentSession&, const Json&);
+Result<Json> adjust(AgentSession&, const Json&);
+Result<Json> canvasOp(AgentSession&, const Json&);
 
 Result<Json> select(AgentSession&, const Json&);
 Result<Json> selectInvert(AgentSession&, const Json&);

@@ -216,7 +216,7 @@ MARI_TEST(capabilities_matches_dispatch) {
                              "layer.list", "layer.add", "layer.remove", "layer.move",
                              "layer.duplicate", "layer.merge", "layer.setProps", "layer.flatten", "layer.mask",
                              "layer.group", "layer.ungroup", "stroke", "fill", "bucket",
-                             "erase", "gradient", "transform", "select", "select.invert",
+                             "erase", "gradient", "transform", "adjust", "canvas", "select", "select.invert",
                              "select.expand", "select.feather", "brush.list", "brush.import",
                              "brush.set", "brush.describe", "brush.save", "brush.remove", "brush.export", "render", "thumbnail", "compare",
                              "batch", "events.subscribe", "events.unsubscribe"}) {
@@ -739,12 +739,29 @@ MARI_TEST(transform_is_honest_about_what_it_cannot_do) {
     CHECK_EQ(static_cast<int>(alphaAt(10, 10)), 0);   // 원래 자리는 비었다
     CHECK_EQ(static_cast<int>(alphaAt(80, 80)), 255); // 옮겨간 자리에 있다
 
-    // 🔴 확대·회전은 없는 기능이다. 대충 해 주지 않는다.
+    // 확대·회전은 이제 리샘플러(app::transformLayer)가 있다. 2배: 64..96 → 48..112 (중심 80).
     Json scale = req("transform");
     scale.set("scale", Json::number(2.0));
     const Json scaled = s->execute(scale);
-    CHECK(!scaled["ok"].asBool());
-    CHECK_EQ(scaled["error"]["code"].asString(), std::string("Unsupported"));
+    CHECK(scaled["ok"].asBool());
+    CHECK(s->document()->exportComposite(px).ok());
+    CHECK_EQ(static_cast<int>(alphaAt(50, 50)), 255);
+    CHECK_EQ(static_cast<int>(alphaAt(40, 40)), 0);
+    // 색 보정과 캔버스 연산도 같은 계층에서.
+    Json inv = req("adjust");
+    inv.set("kind", Json::string("invert"));
+    CHECK(s->execute(inv)["ok"].asBool());
+    CHECK(s->document()->exportComposite(px).ok());
+    CHECK_EQ(static_cast<int>(px[(80u * 128u + 80u) * 4u]), 0); // 흰색 → 검정
+    Json flip = req("canvas");
+    flip.set("action", Json::string("rotate"));
+    flip.set("degrees", Json::integer(90));
+    const Json rot = s->execute(flip);
+    CHECK(rot["ok"].asBool());
+    CHECK(s->document()->canvasSize() == (Size{128, 128}));
+    Json bad = req("canvas");
+    bad.set("action", Json::string("melt"));
+    CHECK(!s->execute(bad)["ok"].asBool());
 }
 
 MARI_TEST(json_round_trips) {

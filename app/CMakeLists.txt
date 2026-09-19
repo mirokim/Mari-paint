@@ -13,6 +13,7 @@ set(MARI_APP_SOURCES
     src/stroke_entry.cpp
     src/live_stroke.cpp
     src/layer_commands.cpp
+    src/image_ops.cpp
     src/application.cpp
 )
 
