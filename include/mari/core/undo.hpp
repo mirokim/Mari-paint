@@ -120,6 +120,9 @@ public:
     /// 되돌릴/다시할 명령의 이름. 없으면 빈 문자열.
     [[nodiscard]] const std::string& undoText() const;
     [[nodiscard]] const std::string& redoText() const;
+    /// 히스토리 UI 용: 되돌릴 명령 이름들(오래된 것부터) · 다시 할 명령 이름들(가까운 것부터).
+    [[nodiscard]] std::vector<std::string> undoTexts() const;
+    [[nodiscard]] std::vector<std::string> redoTexts() const;
 
     /// 한 단계 되돌린다/다시 한다. 할 게 없으면 NotFound.
     /// dirty 가 있으면 갱신해야 할 타일 좌표를 덧붙인다.

@@ -121,6 +121,22 @@ const std::string& UndoStack::undoText() const {
     return undo_.empty() ? emptyText() : undo_.back()->text();
 }
 
+std::vector<std::string> UndoStack::undoTexts() const {
+    std::vector<std::string> out;
+    out.reserve(undo_.size());
+    for (const auto& c : undo_)
+        out.push_back(c->text());
+    return out;
+}
+
+std::vector<std::string> UndoStack::redoTexts() const {
+    std::vector<std::string> out;
+    out.reserve(redo_.size());
+    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it)
+        out.push_back((*it)->text());
+    return out;
+}
+
 const std::string& UndoStack::redoText() const {
     return redo_.empty() ? emptyText() : redo_.back()->text();
 }

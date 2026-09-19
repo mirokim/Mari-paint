@@ -11,6 +11,7 @@
 #include "navigator.hpp"
 #include "popup_palette.hpp"
 #include "shortcut_dialog.hpp"
+#include "side_panels.hpp"
 #include "tablet_dialog.hpp"
 
 #include <mari/agent/brush_library.hpp>
@@ -350,6 +351,9 @@ void MainWindow::buildMenus() {
     viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::ALT | Qt::Key_M), this,
                                           [this] { canvas_->toggleMirror(); });
     view->addSeparator();
+    view->addAction("히스토리 패널", this, [this] { historyDock_->setVisible(!historyDock_->isVisible()); historyDock_->raise(); });
+    view->addAction("팔레트 패널", this, [this] { paletteDock_->setVisible(!paletteDock_->isVisible()); paletteDock_->raise(); });
+    view->addAction("참조 이미지 열기...", this, [this] { refDock_->setVisible(true); refDock_->raise(); refPanel_->open(); });
     viewActions_.panels = view->addAction(themedIcon("layout-sidebar-right-collapse", 20), "패널 숨김/표시",
                                           QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
     QAction* canvasOnly = view->addAction("캔버스 전용 모드", this, &MainWindow::toggleCanvasOnly);
@@ -599,7 +603,46 @@ void MainWindow::buildDocks() {
     brushDock_->setWidget(brushPanel_);
     addDockWidget(Qt::RightDockWidgetArea, brushDock_);
     tabifyDockWidget(layerDock_, brushDock_);
+    historyDock_ = new QDockWidget("히스토리", this);
+    historyDock_->setObjectName("historyDock");
+    historyDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    historyPanel_ = new HistoryPanel(historyDock_);
+    historyDock_->setWidget(historyPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, historyDock_);
+    tabifyDockWidget(layerDock_, historyDock_);
+    paletteDock_ = new QDockWidget("팔레트", this);
+    paletteDock_->setObjectName("paletteDock");
+    paletteDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    palettePanel_ = new PalettePanel(paletteDock_);
+    paletteDock_->setWidget(palettePanel_);
+    addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
+    tabifyDockWidget(colorDock_, paletteDock_);
+    colorDock_->raise();
+    refDock_ = new QDockWidget("참조", this);
+    refDock_->setObjectName("refDock");
+    refDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetFloatable);
+    refPanel_ = new ReferencePanel(refDock_);
+    refDock_->setWidget(refPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, refDock_);
+    tabifyDockWidget(navDock_, refDock_);
+    navDock_->raise();
     layerDock_->raise();
+    connect(historyPanel_, &HistoryPanel::jumpRequested, this, [this](int steps) {
+        app::Document* doc = activeDocument();
+        if (doc == nullptr || canvas_->strokeActive() || canvas_->transformActive()) return;
+        for (int i = 0; i < std::abs(steps); ++i) {
+            const Result<void> r = steps > 0 ? doc->undo() : doc->redo();
+            if (!r.ok()) break;
+        }
+        canvas_->invalidateCanvas();
+        canvas_->selectionChangedExternally();
+        layerPanel_->refresh();
+        thumbTimer_->start();
+        refreshTitle();
+        historyPanel_->refresh();
+    });
+    connect(palettePanel_, &PalettePanel::colorChosen, this, [this](const QColor& c) { colorPanel_->setForeground(c); });
+    connect(refPanel_, &ReferencePanel::colorPicked, this, [this](const QColor& c) { colorPanel_->setForeground(c); });
     resizeDocks({navDock_, colorDock_, layerDock_}, {150, 330, 400}, Qt::Vertical);
     resizeDocks({colorDock_}, {280}, Qt::Horizontal);
     brushPanel_->setPreviewColor(colorPanel_->foreground());
@@ -625,8 +668,10 @@ void MainWindow::buildDocks() {
     connect(layerPanel_, &LayerPanel::activeLayerChanged, this, [this](LayerId) { refreshStatus(); });
     connect(colorPanel_, &ColorPanel::foregroundChanged, this, [this](const QColor& c) {
         brushPanel_->setPreviewColor(c);
+        palettePanel_->setCurrentColor(c);
         refreshStatus();
     });
+    palettePanel_->setCurrentColor(colorPanel_->foreground());
 }
 
 void MainWindow::buildStatusBar() {
@@ -654,6 +699,7 @@ void MainWindow::attachDocument(app::Document* doc) {
     autosaveDirty_ = false;
     canvas_->setDocument(doc);
     layerPanel_->setDocument(doc);
+    if (historyPanel_ != nullptr) historyPanel_->setDocument(doc);
     if (navigator_ != nullptr) navigator_->refreshImage();
     refreshTitle();
     refreshStatus();
@@ -1276,6 +1322,9 @@ void MainWindow::togglePanels() {
     layerDock_->setVisible(show);
     navDock_->setVisible(show);
     brushDock_->setVisible(show);
+    historyDock_->setVisible(show);
+    paletteDock_->setVisible(show);
+    refDock_->setVisible(show);
     toolsBar_->setVisible(show);
     optionsBar_->setVisible(show);
 }
@@ -1363,6 +1412,7 @@ void MainWindow::refreshTitle() {
     }
     setWindowTitle(title);
     refreshStatus();
+    if (historyPanel_ != nullptr) historyPanel_->refresh();
 }
 
 } // namespace mari::ui

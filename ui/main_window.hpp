@@ -38,6 +38,9 @@ class LayerPanel;
 class Navigator;
 class PopupPalette;
 class BrushPanel;
+class HistoryPanel;
+class PalettePanel;
+class ReferencePanel;
 class ShortcutRegistry;
 enum class Tool;
 
@@ -113,6 +116,12 @@ private:
     QDockWidget* layerDock_ = nullptr;
     QDockWidget* navDock_ = nullptr;
     QDockWidget* brushDock_ = nullptr;
+    QDockWidget* historyDock_ = nullptr;
+    QDockWidget* paletteDock_ = nullptr;
+    QDockWidget* refDock_ = nullptr;
+    HistoryPanel* historyPanel_ = nullptr;
+    PalettePanel* palettePanel_ = nullptr;
+    ReferencePanel* refPanel_ = nullptr;
     BrushPanel* brushPanel_ = nullptr;
     usize builtinBrushCount_ = 0;
     std::string brushDir_;

@@ -44,6 +44,8 @@ set(MARI_UI_SOURCES
     brush_panel.hpp
     brush_editor.cpp
     brush_editor.hpp
+    side_panels.cpp
+    side_panels.hpp
     shortcut_dialog.hpp
     shortcut_dialog.cpp
     tablet_dialog.hpp
