@@ -7,6 +7,8 @@
 #include <mari/io/brush/importer.hpp>
 #include <mari/test/harness.hpp>
 
+#include <cstdlib>
+
 #include "fixture_builder.hpp"
 
 #include <algorithm>
@@ -18,12 +20,12 @@ namespace mb = mari::brush;
 
 namespace {
 
-/// 4×4 원형 팁. abr 규약대로 0 = 잉크 가득.
+/// 4×4 원형 팁. 실물 abr 규약: 255 = 잉크 가득, 0 = 빈 곳(모서리).
 std::vector<u8> tipPixels() {
-    return {255, 0,   0,   255, //
-            0,   0,   0,   0,   //
-            0,   0,   0,   0,   //
-            255, 0,   0,   255};
+    return {0,   255, 255, 0,   //
+            255, 255, 255, 255, //
+            255, 255, 255, 255, //
+            0,   255, 255, 0};
 }
 
 /// 3×2 텍스처 패턴.
@@ -145,8 +147,8 @@ MARI_TEST(abr_roundtrip_tip_and_behavior) {
     CHECK(pen->tip.kind == mb::TipKind::Bitmap);
     CHECK_EQ(pen->tip.bitmap.width, 4);
     CHECK_EQ(pen->tip.bitmap.height, 4);
-    CHECK_EQ(int(pen->tip.bitmap.pixels[0]), 0);   // 원본 255(빈 곳)
-    CHECK_EQ(int(pen->tip.bitmap.pixels[1]), 255); // 원본 0(잉크)
+    CHECK_EQ(int(pen->tip.bitmap.pixels[0]), 0);   // 모서리 = 빈 곳(뒤집지 않는다)
+    CHECK_EQ(int(pen->tip.bitmap.pixels[1]), 255); // 잉크
 }
 
 MARI_TEST(abr_imports_dynamics_not_just_texture) {
@@ -255,13 +257,13 @@ MARI_TEST(abr_rle_tip_matches_raw_tip) {
 MARI_TEST(abr_without_desc_still_yields_tips) {
     // 동작 정보가 없는 abr. 팁만 가져오고, **그렇다고 리포트에 적어야 한다.**
     const auto samp = fx::sampSection({fx::SampSpec{"only-tip", 4, 4, tipPixels(), 50, false}});
-    const auto bytes = fx::buildAbr(6, 1, {{"samp", samp}});
+    const auto bytes = fx::buildAbr(6, 2, {{"samp", samp}});
     auto result = importAbrBytes(bytes.data(), bytes.size(), "tiponly.abr");
     CHECK(result.ok());
     if (!result.ok())
         return;
     CHECK_EQ(result.value().presets.size(), usize(1));
-    CHECK_NEAR(result.value().presets[0].spacing, 0.5f, 0.001f);
+    CHECK_NEAR(result.value().presets[0].spacing, 0.25f, 0.001f); // v6 머리말엔 간격이 없다 — 기본 25%
     CHECK(result.value().presets[0].tip.kind == mb::TipKind::Bitmap);
     CHECK(hasNote(result.value().report, mb::ImportSeverity::Degraded, "desc"));
 }
@@ -269,7 +271,7 @@ MARI_TEST(abr_without_desc_still_yields_tips) {
 MARI_TEST(abr_unknown_section_is_skipped_with_a_note) {
     const auto samp = fx::sampSection({fx::SampSpec{"tip", 4, 4, tipPixels(), 25, false}});
     const std::vector<u8> junk(16, 0xAB);
-    const auto bytes = fx::buildAbr(6, 1, {{"zzzz", junk}, {"samp", samp}});
+    const auto bytes = fx::buildAbr(6, 2, {{"zzzz", junk}, {"samp", samp}});
     auto result = importAbrBytes(bytes.data(), bytes.size(), "unknown.abr");
     CHECK(result.ok());
     if (!result.ok())
@@ -355,6 +357,37 @@ MARI_TEST(abr_file_roundtrip_through_disk) {
     auto missing = importAbrFile("/존재하지/않는/파일.abr");
     CHECK(!missing.ok());
     CHECK(missing.code() == ErrorCode::IoError);
+}
+
+MARI_TEST(abr_real_world_cc0_file_imports_every_tip_with_nothing_dropped) {
+    // 실물 검증(CC0, K. M. Alexander "Myer Settlement"): 148개 브러시, 전부 비트맵 팁, Dropped 0.
+    // 🔴 MARI_FIXTURE_DIR 은 ctest 가 준다. 없으면 **실패**다 — 조용히 건너뛰지 않는다.
+    const char* dir = std::getenv("MARI_FIXTURE_DIR");
+    CHECK(dir != nullptr);
+    if (dir == nullptr)
+        return;
+    const std::string path = std::string(dir) + "/brushes/myer-settlement-cc0.abr";
+    auto result = importAbrFile(path);
+    CHECK(result.ok());
+    if (!result.ok())
+        return;
+    CHECK_EQ(result.value().presets.size(), usize(148));
+    usize bitmaps = 0;
+    for (const auto& p : result.value().presets) {
+        if (p.tip.kind == mb::TipKind::Bitmap && !p.tip.bitmap.empty())
+            ++bitmaps;
+    }
+    CHECK_EQ(bitmaps, usize(148));
+    CHECK(!result.value().report.hasDropped());
+    // 팁 극성: 모서리는 빈 곳(0), 어딘가에는 잉크(255)가 있다.
+    const auto& tip = result.value().presets[0].tip.bitmap;
+    CHECK_EQ(int(tip.pixels[0]), 0);
+    bool anyInk = false;
+    for (const u8 v : tip.pixels)
+        anyInk = anyInk || v == 255;
+    CHECK(anyInk);
+    // 간격은 desc 의 Spcn(10%) 에서 온다.
+    CHECK_NEAR(result.value().presets[0].spacing, 0.10f, 0.001f);
 }
 
 MARI_TEST_MAIN()

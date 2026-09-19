@@ -139,3 +139,21 @@ GUI: 브러시 도크(엔진 미리보기 격자·검색·우클릭 편집/복�
 
 **에이전트 도구 동등성**(사람이 GUI 로 하는 것 = 헤드리스로 같은 코어 경로): `bucket` · `select mode=wand` · `layer.flatten` ·
 `layer.mask` · `layer.group/ungroup` · 획 점에 `tx/ty/t` · `background`. 남은 것: 자유 변형·색 보정(둘 다 GUI 도 아직 없음).
+
+### 11.1 실물 파일 검증 (2026-09-19)
+
+**.abr** — K. M. Alexander 의 CC0 세트 두 개(Myer 148개 · Mercator 238개, Photoshop 2025 저장, v6.2)로 검증.
+합성 픽스처만 믿고 있던 두 가지가 틀려 있었다:
+1. `samp` 머리말 레이아웃: 실제는 `u32 길이 · 37바이트 키("$"+UUID) · (subversion 2) 264바이트 · bounds · depth · compression`.
+   옛 코드(u16 spacing + 유니코드 이름)는 실물에서 "머리말이 잘렸다"로 끝나 팁이 하나도 안 붙었다.
+2. 팁 극성: 실물은 **255 = 잉크**. 뒤집어 읽어서 스탬프가 검은 덩어리였다.
+고친 뒤: 386/386 비트맵 팁, Dropped 0(`use*` 토글은 소비해서 꺼진 기능을 IR 에서 뺀다).
+`tests/fixtures/brushes/myer-settlement-cc0.abr` 을 리포에 넣고 `abr_real_world_cc0_file_...` 테스트가 지킨다(MARI_FIXTURE_DIR).
+
+**.sut** — ED_of_all 무료 팩 5개(bubble · flower · spray paint · Winged Jewel · zombie, 재배포 금지라 리포에 넣지 않음)로 검증.
+확인한 실물 스키마: `Node.NodeVariantID → Variant.VariantID`(_PW_ID 가 아니다) · `BrushSize/BrushInterval(%)/BrushHardness/
+BrushThickness(100=원)/BrushRotation(90=똑바로)/Opacity/BrushFlow/CompositeMode` · `MaterialFile.FileData` = tar(catalog.zip,
+`data/material_0.layer`(독점 C2F — 못 읽음), `thumbnail/thumbnail.png`) → **팁은 썸네일(≤300px)** 에서 · effector blob =
+`11×u32 머리말([3]=최솟값%, [6]=랜덤%) + (12,n,16) 블록(BE double 점)` — 첫 블록을 필압 커브로 반영, 두 번째(속도/기울기 추정)는 리포트만.
+스프레이(`BrushUseSpray/SpraySize/SprayDensity`)→흩뿌림·개수, `UseDualBrush/Dual*`→듀얼, `BrushUseWaterEdge`→젖은 가장자리,
+`BrushHue/Saturation/Value/SubColor`→색 변화. 남은 불확실: BrushRotationEffector 열거값(실물 5개 전부 3), 속도·기울기 커브.

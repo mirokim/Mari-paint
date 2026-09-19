@@ -25,5 +25,5 @@ function(mari_add_test name)
     set_target_properties(${_tgt} PROPERTIES OUTPUT_NAME "${name}")
     add_test(NAME ${name} COMMAND ${_tgt})
     # 🔴 테스트가 진짜 사용자 브러시 폴더(%LOCALAPPDATA%)에 쓰지 않게 격리한다.
-    set_tests_properties(${name} PROPERTIES ENVIRONMENT "MARI_BRUSH_DIR=${CMAKE_BINARY_DIR}/test-brushes/${name}")
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "MARI_BRUSH_DIR=${CMAKE_BINARY_DIR}/test-brushes/${name};MARI_FIXTURE_DIR=${CMAKE_SOURCE_DIR}/tests/fixtures")
 endfunction()

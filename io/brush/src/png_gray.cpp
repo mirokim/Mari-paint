@@ -139,3 +139,14 @@ Result<mari::brush::GrayImage> decodePngGray(const u8* data, usize size, bool in
 }
 
 } // namespace mari::io::brush
+
+
+namespace mari::io::brush {
+
+Result<mari::brush::GrayImage> decodePngInk(const u8* data, usize size) {
+    // decodePngGray 는 투명한 곳을 흰색으로 깔고(v·a + 255·(255−a))/255 를 준다.
+    // 그것을 뒤집으면 a·(255−v)/255 — "알파 × 어두움" 이 그대로 나온다.
+    return decodePngGray(data, size, /*invert=*/true, nullptr);
+}
+
+} // namespace mari::io::brush

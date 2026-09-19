@@ -27,6 +27,10 @@ struct PngGrayInfo {
                                                            bool invert = false,
                                                            PngGrayInfo* info = nullptr);
 
+/// 팁/텍스처용 **잉크 마스크**로 디코드한다: 잉크 = 알파 × (255 − 밝기).
+/// CSP 소재 썸네일(RGBA, 투명 바탕에 회색 그림)에 맞는 규약이다. 알파가 없으면 255 − 밝기.
+[[nodiscard]] Result<mari::brush::GrayImage> decodePngInk(const u8* data, usize size);
+
 /// 바이트가 PNG 시그니처로 시작하는가.
 [[nodiscard]] bool looksLikePng(const u8* data, usize size);
 

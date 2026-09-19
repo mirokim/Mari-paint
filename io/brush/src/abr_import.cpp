@@ -84,7 +84,12 @@ bool unpackBits(ByteReader& r, u8* dst, usize width, usize packedLen) {
 }
 
 /// samp 섹션 하나를 파싱한다. 실패한 브러시는 건너뛰고 리포트에 남긴다.
-std::vector<SampBrush> parseSampSection(ByteReader& r, ImportReport& report) {
+///
+/// v6 머리말(실물 .abr 로 확인, Krita/GIMP 로더와 같다):
+///   u32 길이 | 37바이트 키("$" + UUID 36자) | subversion 1: 10바이트 · 2: 264바이트 건너뜀 |
+///   i32 top,left,bottom,right | u16 depth | u8 compression | 픽셀
+/// 키의 "$" 를 뗀 것이 desc 의 sampledData 와 같다.
+std::vector<SampBrush> parseSampSection(ByteReader& r, u16 subversion, ImportReport& report) {
     std::vector<SampBrush> out;
     while (r.remaining() >= 4) {
         const u32 brushLen = r.u32be();
@@ -101,14 +106,17 @@ std::vector<SampBrush> parseSampSection(ByteReader& r, ImportReport& report) {
             brushEnd = r.size();
 
         SampBrush b;
-        (void)r.u32be(); // 용도 불명 필드. 값을 쓰지 않는다
-        b.spacing = r.u16be();
-        b.name = r.unicodeString();
-        b.antialias = r.u8v() != 0;
-        (void)r.i16be(); // 짧은 bounds(top)
-        (void)r.i16be();
-        (void)r.i16be();
-        (void)r.i16be();
+        {
+            std::vector<u8> key = r.bytes(37);
+            std::string name;
+            for (const u8 c : key) {
+                if (c == 0) break;
+                name.push_back(static_cast<char>(c));
+            }
+            if (!name.empty() && name[0] == '$') name.erase(0, 1);
+            b.name = name;
+        }
+        r.seek(r.pos() + (subversion == 1 ? 10u : 264u));
         const i32 top = r.i32be();
         const i32 left = r.i32be();
         const i32 bottom = r.i32be();
@@ -173,12 +181,12 @@ std::vector<SampBrush> parseSampSection(ByteReader& r, ImportReport& report) {
             continue;
         }
 
-        // .abr 의 팁은 "검을수록 잉크가 많다". Mari 의 GrayImage 는 반대 규약이라 뒤집는다.
+        // 🔴 실물 .abr(v6.2, CC0 세트 두 개)로 확인: samp 픽셀은 **값이 클수록 잉크가 많다**(0 = 빈 곳).
+        //    포토샵 UI 가 팁을 "흰 바탕에 검게" 보여 주는 것과 반대라 예전엔 뒤집었고, 그래서 스탬프가
+        //    통째로 검은 덩어리로 찍혔다. Mari 의 GrayImage 와 같은 규약이라 그대로 쓴다.
         b.mask.width = static_cast<i32>(width);
         b.mask.height = static_cast<i32>(height);
-        b.mask.pixels.resize(width * height);
-        for (usize i = 0; i < raw.size(); ++i)
-            b.mask.pixels[i] = static_cast<u8>(255u - raw[i]);
+        b.mask.pixels = std::move(raw);
 
         out.push_back(std::move(b));
         r.seek(brushEnd);
@@ -573,6 +581,7 @@ void translateTip(TrackedDescriptor& t, MariBrushPreset& preset, ImportReport& r
     }
     if (const DescValue* v = t.get("sampledData"))
         sampledData = v->text;
+    (void)t.getAny({"Nm  ", "Name"}); // 팁 이름 — 프리셋 이름은 바깥 것을 쓴다
 
     // flipX/flipY 는 우리가 직접 뒤집을 수 있다. 버리지 않는다.
     bool flipX = false;
@@ -924,6 +933,41 @@ MariBrushPreset translateBrush(const Descriptor& brushDesc, const std::string& p
             preset.tip.diameter = static_cast<f32>(std::max(sample->mask.width, sample->mask.height));
     }
 
+    // ── 켜짐/꺼짐 토글 — 포토샵은 설정을 남겨 두고 플래그로 끈다. 꺼진 것은 IR 에서도 뺀다.
+    const auto flagOff = [&](std::initializer_list<const char*> keys) {
+        const DescValue* v = t.getAny(keys);
+        return v != nullptr && !v->asBool(true);
+    };
+    const auto dropLinks = [&](std::initializer_list<DynamicOutput> outs) {
+        preset.dynamics.erase(std::remove_if(preset.dynamics.begin(), preset.dynamics.end(),
+                                             [&](const DynamicLink& l) {
+                                                 for (DynamicOutput o : outs)
+                                                     if (l.output == o) return true;
+                                                 return false;
+                                             }),
+                              preset.dynamics.end());
+    };
+    if (flagOff({"useTipDynamics"})) dropLinks({DynamicOutput::Size, DynamicOutput::Roundness, DynamicOutput::Rotation});
+    if (flagOff({"usePaintDynamics"})) dropLinks({DynamicOutput::Opacity, DynamicOutput::Flow});
+    if (flagOff({"useScatter"})) {
+        dropLinks({DynamicOutput::Scatter});
+        preset.scatterCount = 1;
+    }
+    if (flagOff({"useTexture"})) preset.texture.reset();
+    if (flagOff({"useColorDynamics"})) preset.colorDynamics = ColorDynamics{};
+    if (flagOff({"useDualBrush"})) preset.dual.reset();
+    // 그릴 것이 없는 메타데이터 — 조용히 넘긴다(브러시 그룹, 포즈, UI 아이콘).
+    (void)t.getAny({"useBrushPose", "brushGroup", "interfaceIconFrameDimmed", "useBrushSize", "protectTexture", "toolOptions"});
+    if (const Descriptor* grp = t.child("brushGroup")) {
+        TrackedDescriptor gt(*grp, t.path("brushGroup"), used);
+        (void)gt.getAny({"useBrushGroup", "Nm  ", "Name", "brushGroupName", "expanded"});
+    }
+    if (const Descriptor* pose = t.child("brushPose")) {
+        TrackedDescriptor pt(*pose, t.path("brushPose"), used);
+        (void)pt.getAny({"useBrushPose", "overridePoseAngle", "overridePoseTilt", "overridePosePressure",
+                         "poseAngle", "poseTiltX", "poseTiltY", "posePressure"});
+    }
+
     reportUnmapped(brushDesc, prefix, used, preset.name, report);
     return preset;
 }
@@ -1028,7 +1072,7 @@ Result<ImportResult> importAbrBytes(const u8* data, usize size, const std::strin
 
         ByteReader sub(data + start, len);
         if (key == "samp") {
-            samples = parseSampSection(sub, result.report);
+            samples = parseSampSection(sub, subversion, result.report);
         } else if (key == "desc") {
             auto d = parseDescriptorSection(sub);
             if (d)

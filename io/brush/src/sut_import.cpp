@@ -30,6 +30,8 @@
 namespace mari::io::brush {
 
 using mari::brush::BrushTexture;
+using mari::brush::DualBrush;
+using mari::brush::TipKind;
 using mari::brush::DynamicInput;
 using mari::brush::DynamicLink;
 using mari::brush::DynamicOutput;
@@ -164,6 +166,51 @@ bool curveIsSane(const ResponseCurve& c) {
     return true;
 }
 
+/// 실물 effector blob(CSP 1.x~3.x, 실제 .sut 5개로 확인):
+///   머리말 11×u32 BE: [0]=44(머리말 길이) [1]=플래그 [3]=최솟값% [6]=랜덤% …
+///   이어서 (12, n, 16) 블록이 0개 이상: 점 n개, 점마다 BE double x, y — 첫 블록이 필압 커브.
+///   두 번째 이후 블록(속도·기울기로 추정)은 확신이 없어 적용하지 않고 리포트에만 남긴다.
+struct RealEffector {
+    f32 minimum = 0.0f;     ///< 0..1
+    f32 randomAmount = 0.0f;///< 0..1
+    std::vector<ResponseCurve> curves;
+};
+
+bool parseRealEffector(const u8* data, usize size, RealEffector& out) {
+    if (data == nullptr || size < 44)
+        return false;
+    ByteReader r(data, size);
+    u32 head[11];
+    for (u32& h : head)
+        h = r.u32be();
+    if (r.failed() || head[0] != 44)
+        return false;
+    out.minimum = std::clamp(static_cast<f32>(head[3]) / 100.0f, 0.0f, 1.0f);
+    out.randomAmount = std::clamp(static_cast<f32>(head[6]) / 100.0f, 0.0f, 1.0f);
+    // 블록 스캔: (12, n, 16) 을 찾는다. 사이의 미지 u32 는 건너뛴다.
+    usize p = 44;
+    while (p + 12 <= size) {
+        ByteReader b(data + p, size - p);
+        const u32 a = b.u32be();
+        const u32 n = b.u32be();
+        const u32 stride = b.u32be();
+        if (a == 12 && stride == 16 && n >= 2 && n <= 64 && p + 12 + static_cast<usize>(n) * 16 <= size) {
+            ResponseCurve c;
+            for (u32 i = 0; i < n; ++i) {
+                const f64 x = b.f64be();
+                const f64 y = b.f64be();
+                c.points.push_back({static_cast<f32>(x), static_cast<f32>(y)});
+            }
+            if (!b.failed() && curveIsSane(c))
+                out.curves.push_back(std::move(c));
+            p += 12 + static_cast<usize>(n) * 16;
+        } else {
+            p += 4;
+        }
+    }
+    return true;
+}
+
 /// blob 하나를 커브로 해석한다. 성공하면 사용한 가설을 돌려준다.
 EffectorLayout parseEffectorCurve(const u8* data, usize size, ResponseCurve& out) {
     if (data == nullptr || size < 8)
@@ -237,7 +284,7 @@ bool outputFromColumnName(const std::string& lower, DynamicOutput& out) {
         DynamicOutput output;
     };
     static const Row kRows[] = {
-        {"size", DynamicOutput::Size},          {"thick", DynamicOutput::Size},
+        {"size", DynamicOutput::Size},          {"thick", DynamicOutput::Roundness},
         {"opacity", DynamicOutput::Opacity},    {"alpha", DynamicOutput::Opacity},
         {"density", DynamicOutput::Flow},       {"flow", DynamicOutput::Flow},
         {"flat", DynamicOutput::Roundness},     {"round", DynamicOutput::Roundness},
@@ -276,6 +323,12 @@ bool inputFromColumnName(const std::string& lower, DynamicInput& out) {
     return false;
 }
 
+/// 색 변화 컬럼 모음(실물 컬럼 이름 기준).
+struct ColorDynamicsAccumulator {
+    f32 hue = 0.0f, sat = 0.0f, val = 0.0f, sub = 0.0f;
+    bool perStroke = false;
+};
+
 // ── 값 매핑 ──────────────────────────────────────────────────────────────
 
 /// 프리셋의 어느 칸에 넣을 것인가.
@@ -307,13 +360,13 @@ const FieldMapping kFieldMappings[] = {
     {SutField::Spacing, "간격", {"brushinterval", "interval", "brushspacing", nullptr}},
     {SutField::Hardness, "경도", {"brushhardness", "hardness", "brushedgehardness", nullptr}},
     {SutField::Angle, "각도", {"brushangle", "brushrotation", nullptr, nullptr}},
-    {SutField::Roundness, "원형도", {"brushflatrate", "brushroundness", "flatness", nullptr}},
-    {SutField::BlendMode, "합성 모드", {"brushblendmode", "blendmode", "combinemode", nullptr}},
-    {SutField::TextureScale, "텍스처 배율", {"texturescale", "materialscale", nullptr, nullptr}},
+    {SutField::Roundness, "원형도", {"brushthickness", "brushflatrate", "brushroundness", "flatness"}},
+    {SutField::BlendMode, "합성 모드", {"compositemode", "brushblendmode", "blendmode", "combinemode"}},
+    {SutField::TextureScale, "텍스처 배율", {"texturescale2", "texturescale", "materialscale", nullptr}},
     {SutField::TextureDepth, "텍스처 세기", {"texturedensity", "texturedepth", nullptr, nullptr}},
     {SutField::TextureBlendMode,
      "텍스처 합성 모드",
-     {"textureblendmode", "texturecombinemode", nullptr, nullptr}},
+     {"texturecompositemode", "textureblendmode", "texturecombinemode", nullptr}},
 };
 
 /// CSP 의 합성 모드 번호 → Mari BlendMode.
@@ -351,16 +404,22 @@ bool textureFromFileData(const u8* blob, usize size, GrayImage& out, std::string
     if (looksLikeTar(blob, size)) {
         auto entries = readTar(blob, size);
         if (entries) {
-            for (const TarEntry& e : entries.value()) {
-                if (!e.isFile() || e.size == 0)
-                    continue;
-                if (!looksLikePng(blob + e.offset, e.size))
-                    continue;
-                auto img = decodePngGray(blob + e.offset, e.size, false, nullptr);
-                if (img) {
-                    out = std::move(img).value();
-                    how = "tar 안의 " + e.name;
-                    return true;
+            // 썸네일(thumbnail/thumbnail.png)이 소재의 실제 그림이다(.layer 는 독점 C2F). 먼저 찾는다.
+            for (int pass = 0; pass < 2; ++pass) {
+                for (const TarEntry& e : entries.value()) {
+                    if (!e.isFile() || e.size == 0)
+                        continue;
+                    const bool isThumb = e.name.find("thumbnail") != std::string::npos;
+                    if ((pass == 0) != isThumb)
+                        continue;
+                    if (!looksLikePng(blob + e.offset, e.size))
+                        continue;
+                    auto img = decodePngGray(blob + e.offset, e.size, false, nullptr);
+                    if (img) {
+                        out = std::move(img).value();
+                        how = "tar 안의 " + e.name;
+                        return true;
+                    }
                 }
             }
         }
@@ -523,6 +582,12 @@ Result<ImportResult> importSutFile(const std::string& path) {
             break;
         }
     }
+    // 🔴 실물(.sut, CSP 1.x~3.x)에서 확인: Node.NodeVariantID 는 Variant._PW_ID 가 아니라
+    //    Variant.VariantID 를 가리킨다. 그 컬럼이 있으면 그걸로 찾는다.
+    if (const ColumnInfo* vid = findColumn(variantCols, "variantid")) {
+        variantKeyExpr = quoteIdent(vid->name);
+        variantKeyColumn = vid->lower;
+    }
 
     // ── 매핑 가능한 컬럼 확인. 없는 것은 전부 리포트에 남긴다. ──
     std::unordered_map<int, const ColumnInfo*> mapped; // SutField → 컬럼
@@ -551,10 +616,20 @@ Result<ImportResult> importSutFile(const std::string& path) {
     // effector 컬럼은 이름으로 훑는다(버전마다 이름이 달라 목록을 못 박는다).
     std::vector<const ColumnInfo*> effectorCols;
     for (const ColumnInfo& c : variantCols) {
-        if (c.lower.find("effector") != std::string::npos) {
-            effectorCols.push_back(&c);
-            consumed.insert(c.lower);
-        }
+        if (c.lower.find("effector") == std::string::npos)
+            continue;
+        consumed.insert(c.lower);
+        // 실물 스키마에서 주 브러시 팁에 걸리는 것만: BrushSize/Opacity/Flow/Thickness.
+        // Dual*/Texture*/Spray*/Rotation*(정수 열거)/Interval/MixColor/Blur/색 변화 effector 는 여기서 빼고
+        // 각자 자리에서 읽거나(회전 랜덤·스프레이) 조용히 넘긴다(그릴 수 없는 것).
+        if (c.lower.rfind("dual", 0) == 0 || c.lower.rfind("texture", 0) == 0 ||
+            c.lower.find("spray") != std::string::npos || c.lower.find("rotation") != std::string::npos ||
+            c.lower.find("interval") != std::string::npos || c.lower.find("mixcolor") != std::string::npos ||
+            c.lower.find("mixalpha") != std::string::npos || c.lower.find("blur") != std::string::npos ||
+            c.lower.find("huechange") != std::string::npos || c.lower.find("saturationchange") != std::string::npos ||
+            c.lower.find("valuechange") != std::string::npos || c.lower.find("subcolor") != std::string::npos)
+            continue;
+        effectorCols.push_back(&c);
     }
     if (effectorCols.empty() && !variantCols.empty())
         result.report.add(ImportSeverity::Info, "effector",
@@ -692,13 +767,19 @@ Result<ImportResult> importSutFile(const std::string& path) {
             bool guessed = false;
             preset.tip.hardness = std::clamp(normalizeRatio(v->number, guessed), 0.0f, 1.0f);
         }
-        if (const CellValue* v = mappedCell(SutField::Angle))
-            preset.tip.angle = static_cast<f32>(v->number);
+        if (const CellValue* v = mappedCell(SutField::Angle)) {
+            // 실물 관찰: CSP 의 BrushRotation 90 이 "똑바로 선" 스탬프다(세로축 기준 각). Mari 는 가로축 기준.
+            const ColumnInfo* col = mapped[static_cast<int>(SutField::Angle)];
+            const bool csp = col != nullptr && col->lower == "brushrotation";
+            preset.tip.angle = static_cast<f32>(v->number) - (csp ? 90.0f : 0.0f);
+        }
         if (const CellValue* v = mappedCell(SutField::Roundness)) {
             bool guessed = false;
-            // CSP 의 "브러시 평평함"은 값이 클수록 납작하다. Mari 의 aspectRatio 와 반대다.
-            const f32 flat = std::clamp(normalizeRatio(v->number, guessed), 0.0f, 1.0f);
-            preset.tip.aspectRatio = std::clamp(1.0f - flat, 0.01f, 1.0f);
+            const f32 r = std::clamp(normalizeRatio(v->number, guessed), 0.0f, 1.0f);
+            const ColumnInfo* col = mapped[static_cast<int>(SutField::Roundness)];
+            // BrushThickness(실물): 100 = 원. 옛 이름 "flat/flatness" 는 반대(클수록 납작).
+            const bool thickness = col != nullptr && col->lower.find("thick") != std::string::npos;
+            preset.tip.aspectRatio = std::clamp(thickness ? r : 1.0f - r, 0.01f, 1.0f);
         }
         if (const CellValue* v = mappedCell(SutField::BlendMode)) {
             const int mode = static_cast<int>(v->number);
@@ -748,6 +829,39 @@ Result<ImportResult> importSutFile(const std::string& path) {
                 continue;
             }
 
+            RealEffector real;
+            if (parseRealEffector(static_cast<const u8*>(v->blob), v->blobSize, real)) {
+                const bool additive = output == DynamicOutput::Rotation || output == DynamicOutput::Scatter;
+                if (!real.curves.empty()) {
+                    DynamicLink link;
+                    link.input = DynamicInput::Pressure;
+                    link.output = output;
+                    link.curve = real.curves.front();
+                    if (!additive) {
+                        // CSP 최솟값: 출력 = min + (1 − min)·curve(p)
+                        for (auto& pt : link.curve.points)
+                            pt.y = real.minimum + (1.0f - real.minimum) * pt.y;
+                    }
+                    preset.dynamics.push_back(std::move(link));
+                }
+                if (real.randomAmount > 0.0f) {
+                    DynamicLink link;
+                    link.input = DynamicInput::Random;
+                    link.output = output;
+                    if (additive)
+                        link.curve.points = {{0.0f, 0.0f}, {1.0f, real.randomAmount}};
+                    else
+                        link.curve.points = {{0.0f, 1.0f - real.randomAmount}, {1.0f, 1.0f}};
+                    preset.dynamics.push_back(std::move(link));
+                }
+                if (real.curves.size() > 1)
+                    result.report.add(ImportSeverity::Degraded, col->name,
+                                      "'" + preset.name + "' 의 " + col->name + " 에 커브가 " +
+                                          std::to_string(real.curves.size()) +
+                                          " 개 있다. 첫 커브(필압)만 반영했고 나머지(속도·기울기로 추정)는 뺐다.");
+                continue;
+            }
+
             ResponseCurve curve;
             const EffectorLayout layout =
                 parseEffectorCurve(static_cast<const u8*>(v->blob), v->blobSize, curve);
@@ -777,9 +891,36 @@ Result<ImportResult> importSutFile(const std::string& path) {
         }
 
         // ── 텍스처 ──
-        const bool wantsTexture = mapped.count(static_cast<int>(SutField::TextureScale)) != 0 ||
-                                  mapped.count(static_cast<int>(SutField::TextureDepth)) != 0;
-        if (!textures.empty()) {
+        // 실물 .sut: MaterialFile.FileData 는 **팁 패턴 소재**다(BrushUsePatternImage=1).
+        // TextureImage 가 비어 있지 않을 때만 텍스처로 본다.
+        bool usePattern = false;
+        if (const CellValue* v = cell("brushusepatternimage")) {
+            usePattern = v->number != 0.0;
+            consumed.insert("brushusepatternimage");
+        }
+        consumed.insert("brushpatternimagearray");
+        consumed.insert("brushpatternnameversion");
+        bool hasTextureImage = false;
+        if (const CellValue* v = cell("textureimage")) {
+            hasTextureImage = v->type == SQLITE_BLOB ? v->blobSize > 0 : !v->text.empty();
+            consumed.insert("textureimage");
+        }
+        // 옛/합성 스키마(플래그 컬럼이 아예 없다)면 예전처럼 FileData 를 텍스처로 본다.
+        const bool legacySchema = cell("brushusepatternimage") == nullptr && cell("textureimage") == nullptr;
+        if (usePattern && !textures.empty()) {
+            const usize pick = static_cast<usize>(index) < textures.size() ? static_cast<usize>(index) : 0;
+            preset.tip.kind = TipKind::Bitmap;
+            preset.tip.bitmap = textures[pick];
+            // 소재 그림은 "흰 바탕에 어두운 잉크"(투명은 흰색으로 깔림) → 잉크 = 255 − 밝기.
+            for (u8& px : preset.tip.bitmap.pixels)
+                px = static_cast<u8>(255u - px);
+            result.report.add(ImportSeverity::Degraded, "MaterialFile",
+                              "'" + preset.name + "' 의 팁은 소재 썸네일(PNG)에서 가져왔다. 원본 .layer(C2F)는 "
+                                                "독점 포맷이라 읽지 않는다 — 해상도가 썸네일(보통 300px)로 제한된다.");
+        }
+        const bool wantsTexture = hasTextureImage || (legacySchema && (mapped.count(static_cast<int>(SutField::TextureScale)) != 0 ||
+                                                                       mapped.count(static_cast<int>(SutField::TextureDepth)) != 0));
+        if (wantsTexture && !textures.empty() && !usePattern) {
             BrushTexture tex;
             if (const CellValue* v = mappedCell(SutField::TextureScale)) {
                 bool guessed = false;
@@ -810,6 +951,104 @@ Result<ImportResult> importSutFile(const std::string& path) {
                               "'" + preset.name +
                                   "' 은 텍스처 설정이 있지만 텍스처 이미지를 꺼내지 못했다.");
         }
+
+        // ── 흩뿌림(스프레이) ──
+        if (const CellValue* v = cell("brushusespray")) {
+            consumed.insert("brushusespray");
+            if (v->number != 0.0) {
+                f32 sprayPx = preset.tip.diameter;
+                if (const CellValue* sz = cell("brushspraysize")) sprayPx = static_cast<f32>(sz->number);
+                bool sync = false;
+                if (const CellValue* sy = cell("brushspraysizesyncbrushsize")) sync = sy->number != 0.0;
+                // 스프레이 반경(지름 대비 비율). 동기화면 브러시 크기와 같이 커진다 — 비율은 그대로.
+                const f32 ratio = preset.tip.diameter > 0.0f ? sprayPx / preset.tip.diameter : 1.0f;
+                DynamicLink link;
+                link.input = DynamicInput::Random;
+                link.output = DynamicOutput::Scatter;
+                link.curve.points = {{0.0f, 0.0f}, {1.0f, std::clamp(ratio, 0.0f, 8.0f)}};
+                preset.dynamics.push_back(std::move(link));
+                if (const CellValue* d = cell("brushspraydensity"))
+                    preset.scatterCount = std::clamp(static_cast<i32>(d->number), 1, 16);
+                (void)sync;
+            }
+        }
+        for (const char* k : {"brushspraysize", "brushspraysizeunit", "brushspraysizesyncbrushsize", "brushspraydensity",
+                              "brushspraybias", "brushsprayusefixedpoint", "brushsprayfixedpointarray",
+                              "brushspraysizeeffector", "brushspraydensityeffector"})
+            consumed.insert(k);
+        // BrushRotationEffector(정수 열거)·RandomScale 은 실물 5개가 전부 기본값(3, 100)이라 의미를 못 박지 못했다.
+        // 랜덤 회전으로 넘겨짚지 않는다 — 조용히 넘긴다.
+        consumed.insert("brushrotationrandomscale");
+        consumed.insert("brushrotationeffector");
+
+        // ── 물 가장자리 → 젖은 가장자리 ──
+        if (const CellValue* v = cell("brushusewateredge")) {
+            preset.wetEdges = v->number != 0.0;
+            consumed.insert("brushusewateredge");
+        }
+
+        // ── 색 변화 ──
+        {
+            ColorDynamicsAccumulator cd;
+            if (const CellValue* v = cell("brushhuechange")) { cd.hue = static_cast<f32>(v->number) / 100.0f; consumed.insert("brushhuechange"); }
+            if (const CellValue* v = cell("brushsaturationchange")) { cd.sat = static_cast<f32>(v->number) / 100.0f; consumed.insert("brushsaturationchange"); }
+            if (const CellValue* v = cell("brushvaluechange")) { cd.val = static_cast<f32>(v->number) / 100.0f; consumed.insert("brushvaluechange"); }
+            if (const CellValue* v = cell("brushsubcolor")) { cd.sub = static_cast<f32>(v->number) / 100.0f; consumed.insert("brushsubcolor"); }
+            if (const CellValue* v = cell("brushchangestrokecolor")) { cd.perStroke = v->number != 0.0; consumed.insert("brushchangestrokecolor"); }
+            preset.colorDynamics.hueJitter = std::clamp(cd.hue, 0.0f, 1.0f);
+            preset.colorDynamics.saturationJitter = std::clamp(cd.sat, 0.0f, 1.0f);
+            preset.colorDynamics.brightnessJitter = std::clamp(cd.val, 0.0f, 1.0f);
+            preset.colorDynamics.fgBgJitter = std::clamp(cd.sub, 0.0f, 1.0f);
+            preset.colorDynamics.perTip = true;
+            for (const char* k : {"brushstrokehuechange", "brushstrokesaturationchange", "brushstrokevaluechange",
+                                  "brushstrokesubcolor", "brushchangecolortarget", "brushchangepatterncolor"})
+                consumed.insert(k);
+        }
+
+        // ── 듀얼 브러시 ──
+        if (const CellValue* v = cell("usedualbrush")) {
+            consumed.insert("usedualbrush");
+            if (v->number != 0.0) {
+                DualBrush dual;
+                if (const CellValue* c = cell("dualsize")) dual.tip.diameter = static_cast<f32>(c->number);
+                if (const CellValue* c = cell("dualhardness")) dual.tip.hardness = std::clamp(static_cast<f32>(c->number) / 100.0f, 0.0f, 1.0f);
+                if (const CellValue* c = cell("dualthickness")) dual.tip.aspectRatio = std::clamp(static_cast<f32>(c->number) / 100.0f, 0.01f, 1.0f);
+                if (const CellValue* c = cell("dualrotation")) dual.tip.angle = static_cast<f32>(c->number);
+                if (const CellValue* c = cell("dualinterval")) dual.spacing = std::clamp(static_cast<f32>(c->number) / 100.0f, 0.01f, 10.0f);
+                if (const CellValue* c = cell("dualbrushcompositemode")) {
+                    BlendMode m = BlendMode::Multiply;
+                    if (mapSutBlendMode(static_cast<int>(c->number), m)) dual.blendMode = m;
+                }
+                preset.dual = std::move(dual);
+            }
+        }
+        for (const auto& [lowerName, value] : row)
+            if (lowerName.rfind("dual", 0) == 0 || lowerName.rfind("fill", 0) == 0)
+                consumed.insert(lowerName);
+
+        // ── 그릴 것과 무관한 UI/입력 설정 — 조용히 넘긴다 ──
+        for (const char* k : {"_pw_id", "changergbbydual", "syncdualbrushsize", "dualantialias",
+                              "variantshowseparator", "variantshowparam", "antialias", "flickerreduction",
+                              "flickerreductionbyspeed", "flickerreductionbyspeedtype", "stickness",
+                              "brushsizeunit", "brushsizesyncviewscale", "brushatleast1pixel", "brushadjustflowbyinterval",
+                              "brushautointervaltype", "brushcontinuousplot", "brushverticalthicknes", "brushrotationinspray",
+                              "brushrotationeffectorinspray", "brushrotationrandominspray", "brushpatternordertype",
+                              "brushpatternordertype2", "brushpatternreversehorizontal", "brushpatternreversevertical",
+                              "textureforplot", "texturereversedensity", "texturestressdensity", "texturerotate",
+                              "texturebrightness", "texturecontrast", "brushusewatercolor", "brushusewatercolor2",
+                              "brushwatercolor", "brushmixcolor", "brushmixalpha", "brushmixcolorextension",
+                              "brushblurlinksize", "brushblur", "brushblurunit", "brushribbon", "brushblendpatternbydarken",
+                              "brushuserevision", "brushrevision", "brushrevisionbyspeed", "brushrevisionbyviewscale",
+                              "brushrevisionbezier", "brushinouttarget", "brushinouttype", "brushinoutbyspeed",
+                              "brushusein", "brushinlength", "brushinlengthunit", "brushinratio", "brushuseout",
+                              "brushoutlength", "brushoutlengthunit", "brushoutratio", "brushsharpencorner",
+                              "brushwateredgeradius", "brushwateredgeradiusunit", "brushwateredgealphapower",
+                              "brushwateredgevaluepower", "brushwateredgeafterdrag", "brushwateredgeblur",
+                              "brushwateredgeblurunit", "brushusevectoreraser", "brushvectorerasertype",
+                              "brushvectoreraserreferalllayer", "brusheraselllayer", "brusheraseallayer",
+                              "brusheraseall_layer", "brusheraseallayer", "brushenablesnap", "brushusevectormagnet",
+                              "brushvectormagnetpower", "brushusereferlayer", "brushadjustvelocity"})
+            consumed.insert(k);
 
         // ── 번역 못 한 컬럼 보고 ── 조용히 버리지 않는다.
         usize emitted = 0;

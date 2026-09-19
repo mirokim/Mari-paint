@@ -211,7 +211,7 @@ inline std::vector<u8> descSection(const std::vector<DescItem>& rootItems) {
 
 // ── samp 섹션 ───────────────────────────────────────────────────────────
 
-/// 팁 하나의 원본 픽셀. abr 규약대로 **0 = 잉크 가득, 255 = 빈 곳**이다.
+/// 팁 하나의 원본 픽셀. 실물 abr 규약대로 **255 = 잉크 가득, 0 = 빈 곳**이다.
 struct SampSpec {
     std::string name;
     i32 width = 0;
@@ -251,18 +251,18 @@ inline std::vector<u8> packBitsRow(const u8* row, usize width) {
     return out;
 }
 
+/// v6.2 머리말(실물 .abr 과 같다): 37바이트 키("$"+이름, NUL 채움) · 264바이트 건너뜀 · bounds · depth · compression.
+/// spacing 은 v6 머리말에 없다 — desc 의 Spcn 이 맡는다(SampSpec::spacing 은 옛 v1/2 규약용으로 남겨 둔다).
 inline std::vector<u8> sampSection(const std::vector<SampSpec>& tips) {
     ByteWriter out;
     for (const SampSpec& t : tips) {
         ByteWriter b;
-        b.u32be(0); // 용도 불명 필드
-        b.u16be(t.spacing);
-        b.unicodeString(t.name);
-        b.u8v(1); // antialias
-        b.i16be(0);
-        b.i16be(0);
-        b.i16be(static_cast<mari::i16>(t.height));
-        b.i16be(static_cast<mari::i16>(t.width));
+        {
+            std::string key = "$" + t.name;
+            key.resize(37, static_cast<char>(0));
+            b.raw(std::vector<u8>(key.begin(), key.end()));
+        }
+        b.raw(std::vector<u8>(264, 0));
         b.i32be(0);           // top
         b.i32be(0);           // left
         b.i32be(t.height);    // bottom
