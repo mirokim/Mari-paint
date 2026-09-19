@@ -8,11 +8,15 @@
 #include <functional>
 #include <vector>
 
+class QComboBox;
 class QLineEdit;
+class QStackedWidget;
 class QToolButton;
 
 namespace mari::ui {
 
+class ColorBox;
+class ColorSliders;
 class ColorWheel;
 class FgBgSwatch;
 
@@ -39,7 +43,18 @@ private:
     void rebuildSwatches();
     void updateFgBgButtons();
 
+    /// 선택 방식. 콤보 순서 = 이 순서. QSettings "color/mode" 에 남긴다.
+    enum class Mode { Wheel = 0, Box, RGB, HSV, HSL };
+    void setMode(Mode m);
+    void pushToPickers();
+
+    QComboBox* modeCombo_ = nullptr;
+    QStackedWidget* stack_ = nullptr;
     ColorWheel* wheel_ = nullptr;
+    ColorBox* box_ = nullptr;
+    ColorSliders* rgb_ = nullptr;
+    ColorSliders* hsv_ = nullptr;
+    ColorSliders* hsl_ = nullptr;
     FgBgSwatch* swatch_ = nullptr;
     QLineEdit* hex_ = nullptr;
     QWidget* recentBox_ = nullptr;

@@ -24,6 +24,8 @@ set(MARI_UI_SOURCES
     canvas_widget.hpp
     color_wheel.cpp
     color_wheel.hpp
+    color_modes.cpp
+    color_modes.hpp
     color_panel.cpp
     color_panel.hpp
     layer_panel.cpp

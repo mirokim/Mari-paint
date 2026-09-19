@@ -2,6 +2,7 @@
 #include <mari/core/undo.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 namespace mari {
@@ -112,6 +113,10 @@ void UndoStack::push(UndoCommandPtr cmd) {
     if (!cmd)
         return;
     redo_.clear(); // 새 가지가 났다 — 다시하기는 버린다
+    if (cmd->pushedAtMs() == 0) {
+        using namespace std::chrono;
+        cmd->setPushedAtMs(duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+    }
     undo_.push_back(std::move(cmd));
     while (undo_.size() > limit_)
         undo_.erase(undo_.begin());
@@ -142,6 +147,22 @@ std::vector<std::string> UndoStack::redoTexts() const {
     out.reserve(redo_.size());
     for (auto it = redo_.rbegin(); it != redo_.rend(); ++it)
         out.push_back((*it)->text());
+    return out;
+}
+
+std::vector<UndoStack::HistoryEntry> UndoStack::undoEntries() const {
+    std::vector<HistoryEntry> out;
+    out.reserve(undo_.size());
+    for (const auto& c : undo_)
+        out.push_back({c->text(), c->pushedAtMs()});
+    return out;
+}
+
+std::vector<UndoStack::HistoryEntry> UndoStack::redoEntries() const {
+    std::vector<HistoryEntry> out;
+    out.reserve(redo_.size());
+    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it)
+        out.push_back({(*it)->text(), (*it)->pushedAtMs()});
     return out;
 }
 

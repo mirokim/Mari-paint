@@ -34,6 +34,14 @@ public:
     [[nodiscard]] virtual Result<void> redo() = 0;
     /// 이 명령이 건드리는 타일 좌표를 out 에 **덧붙인다**(화면 갱신용).
     virtual void affectedTiles(DirtyTiles& out) const = 0;
+
+    /// 스택에 쌓인 벽시계 시각(Unix ms). UndoStack::push 가 채운다 — 히스토리 UI 표시용이고
+    /// 기록·서명엔 쓰지 않는다(그쪽은 단조 시계, docs/03 5.6).
+    [[nodiscard]] i64 pushedAtMs() const noexcept { return pushedAtMs_; }
+    void setPushedAtMs(i64 ms) noexcept { pushedAtMs_ = ms; }
+
+private:
+    i64 pushedAtMs_ = 0;
 };
 
 using UndoCommandPtr = std::unique_ptr<UndoCommand>;
@@ -125,6 +133,13 @@ public:
     /// 히스토리 UI 용: 되돌릴 명령 이름들(오래된 것부터) · 다시 할 명령 이름들(가까운 것부터).
     [[nodiscard]] std::vector<std::string> undoTexts() const;
     [[nodiscard]] std::vector<std::string> redoTexts() const;
+    /// 같은 순서로, 이름 + 쌓인 시각(Unix ms).
+    struct HistoryEntry {
+        std::string text;
+        i64 pushedAtMs = 0;
+    };
+    [[nodiscard]] std::vector<HistoryEntry> undoEntries() const;
+    [[nodiscard]] std::vector<HistoryEntry> redoEntries() const;
 
     /// 한 단계 되돌린다/다시 한다. 할 게 없으면 NotFound.
     /// dirty 가 있으면 갱신해야 할 타일 좌표를 덧붙인다.

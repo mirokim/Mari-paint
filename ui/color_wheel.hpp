@@ -21,9 +21,8 @@ public:
     /// 밖에서 색이 바뀌었다(스포이드·교환). 신호를 내지 않는다.
     void setColor(const QColor& c);
 
+    /// 정사각형을 강제하지 않는다 — 도크가 어떤 모양이든 안에서 min(w,h) 원을 가운데 그린다.
     [[nodiscard]] QSize sizeHint() const override { return {220, 220}; }
-    [[nodiscard]] int heightForWidth(int w) const override { return w; }
-    [[nodiscard]] bool hasHeightForWidth() const override { return true; }
 
 signals:
     void colorChanged(const QColor& c);

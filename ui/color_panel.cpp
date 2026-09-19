@@ -1,15 +1,19 @@
 // Mari Paint — 색 패널 구현 (ui/color_panel.hpp)
 #include "color_panel.hpp"
 
+#include "color_modes.hpp"
 #include "color_wheel.hpp"
 #include "icons.hpp"
 
+#include <QComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSettings>
+#include <QStackedWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -71,16 +75,54 @@ ColorPanel::ColorPanel(QWidget* parent) : QWidget(parent) {
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
+    // 선택 방식 콤보 + 스택. 어느 방식이든 fg_ 하나를 바꾸고, 나머지 방식엔 setColor 로 밀어 넣는다.
+    modeCombo_ = new QComboBox(this);
+    modeCombo_->addItems({"색상환", "사각형", "RGB 슬라이더", "HSV 슬라이더", "HSL 슬라이더"});
+    modeCombo_->setToolTip("색 선택 방식");
+    layout->addWidget(modeCombo_);
+
+    stack_ = new QStackedWidget(this);
+    stack_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     wheel_ = new ColorWheel(this);
-    wheel_->setMaximumSize(220, 220);
-    wheel_->setColor(fg_);
-    layout->addWidget(wheel_, 1, Qt::AlignHCenter);
-    connect(wheel_, &ColorWheel::colorChanged, this, [this](const QColor& c) {
+    box_ = new ColorBox(this);
+    rgb_ = new ColorSliders(ColorSliders::Space::RGB, this);
+    hsv_ = new ColorSliders(ColorSliders::Space::HSV, this);
+    hsl_ = new ColorSliders(ColorSliders::Space::HSL, this);
+    stack_->addWidget(wheel_); // 남는 공간은 위젯이 알아서 가운데 원으로 쓴다
+    stack_->addWidget(box_);
+    auto slidersHost = [&](ColorSliders* w) -> QWidget* {
+        auto* host = new QWidget(this);
+        auto* l = new QVBoxLayout(host);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->addWidget(w);
+        l->addStretch(1);
+        return host;
+    };
+    stack_->addWidget(slidersHost(rgb_));
+    stack_->addWidget(slidersHost(hsv_));
+    stack_->addWidget(slidersHost(hsl_));
+    layout->addWidget(stack_, 1);
+
+    auto onPicked = [this](const QColor& c) {
         if (updating_) return;
         fg_ = c;
+        updating_ = true;
+        pushToPickers();
+        updating_ = false;
         updateFgBgButtons();
         Q_EMIT foregroundChanged(fg_);
+    };
+    connect(wheel_, &ColorWheel::colorChanged, this, onPicked);
+    connect(box_, &ColorBox::colorChanged, this, onPicked);
+    connect(rgb_, &ColorSliders::colorChanged, this, onPicked);
+    connect(hsv_, &ColorSliders::colorChanged, this, onPicked);
+    connect(hsl_, &ColorSliders::colorChanged, this, onPicked);
+    connect(modeCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int i) {
+        setMode(static_cast<Mode>(i));
+        QSettings().setValue("color/mode", i);
     });
+    pushToPickers();
+    setMode(static_cast<Mode>(std::clamp(QSettings().value("color/mode", 0).toInt(), 0, 4)));
 
     auto* row = new QHBoxLayout();
     row->setSpacing(8);
@@ -117,11 +159,26 @@ ColorPanel::ColorPanel(QWidget* parent) : QWidget(parent) {
     rebuildSwatches();
 }
 
+void ColorPanel::setMode(Mode m) {
+    const int i = static_cast<int>(m);
+    if (modeCombo_->currentIndex() != i) modeCombo_->setCurrentIndex(i);
+    stack_->setCurrentIndex(i);
+}
+
+void ColorPanel::pushToPickers() {
+    // 지금 보이는 것만이 아니라 전부 맞춰 둔다 — 방식을 바꿔도 색이 튀지 않게.
+    wheel_->setColor(fg_);
+    box_->setColor(fg_);
+    rgb_->setColor(fg_);
+    hsv_->setColor(fg_);
+    hsl_->setColor(fg_);
+}
+
 void ColorPanel::setForeground(const QColor& c) {
     if (!c.isValid()) return;
     fg_ = c;
     updating_ = true;
-    wheel_->setColor(fg_);
+    pushToPickers();
     updating_ = false;
     updateFgBgButtons();
     Q_EMIT foregroundChanged(fg_);

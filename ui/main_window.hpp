@@ -25,6 +25,7 @@ class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
+class QMenu;
 class QSlider;
 class QSpinBox;
 class QToolBar;
@@ -112,6 +113,7 @@ private:
     CanvasWidget* canvas_ = nullptr;
     ColorPanel* colorPanel_ = nullptr;
     LayerPanel* layerPanel_ = nullptr;
+    QMenu* panelsMenu_ = nullptr;
     QDockWidget* colorDock_ = nullptr;
     QDockWidget* layerDock_ = nullptr;
     QDockWidget* navDock_ = nullptr;

@@ -32,6 +32,7 @@
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QTreeWidget>
@@ -373,8 +374,7 @@ void MainWindow::buildMenus() {
     viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::ALT | Qt::Key_M), this,
                                           [this] { canvas_->toggleMirror(); });
     view->addSeparator();
-    view->addAction("히스토리 패널", this, [this] { historyDock_->setVisible(!historyDock_->isVisible()); historyDock_->raise(); });
-    view->addAction("팔레트 패널", this, [this] { paletteDock_->setVisible(!paletteDock_->isVisible()); paletteDock_->raise(); });
+    panelsMenu_ = view->addMenu("패널"); // buildDocks() 가 도크마다 켜기/끄기 항목을 채운다
     view->addAction("참조 이미지 열기...", this, [this] { refDock_->setVisible(true); refDock_->raise(); refPanel_->open(); });
     viewActions_.panels = view->addAction(themedIcon("layout-sidebar-right-collapse", 20), "패널 숨김/표시",
                                           QKeySequence(Qt::Key_Tab), this, &MainWindow::togglePanels);
@@ -630,20 +630,25 @@ void MainWindow::buildToolbars() {
 }
 
 void MainWindow::buildDocks() {
+    // 🔴 도크는 전부 같은 자유도다: 끌어 옮기기 · 떼어 띄우기 · 닫기, 어느 가장자리든.
+    //    나란히(중첩) 붙이기도 허용해 열 두 개로 벌릴 수 있다. 닫은 건 보기 → 패널 메뉴로 되살린다.
+    constexpr QDockWidget::DockWidgetFeatures kDockFeatures =
+        QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable;
+    setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
     colorDock_ = new QDockWidget("색", this);
-    colorDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    colorDock_->setFeatures(kDockFeatures);
     colorPanel_ = new ColorPanel(colorDock_);
     colorDock_->setWidget(colorPanel_);
     addDockWidget(Qt::RightDockWidgetArea, colorDock_);
 
     layerDock_ = new QDockWidget("레이어", this);
-    layerDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    layerDock_->setFeatures(kDockFeatures);
     layerPanel_ = new LayerPanel(layerDock_);
     layerDock_->setWidget(layerPanel_);
     addDockWidget(Qt::RightDockWidgetArea, layerDock_);
     navDock_ = new QDockWidget("내비게이터", this);
     navDock_->setObjectName("navDock");
-    navDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    navDock_->setFeatures(kDockFeatures);
     navigator_ = new Navigator(canvas_, navDock_);
     navDock_->setWidget(navigator_);
     addDockWidget(Qt::RightDockWidgetArea, navDock_);
@@ -651,21 +656,21 @@ void MainWindow::buildDocks() {
     layerDock_->setObjectName("layerDock");
     brushDock_ = new QDockWidget("브러시", this);
     brushDock_->setObjectName("brushDock");
-    brushDock_->setFeatures(QDockWidget::DockWidgetMovable);
+    brushDock_->setFeatures(kDockFeatures);
     brushPanel_ = new BrushPanel(brushDock_);
     brushDock_->setWidget(brushPanel_);
     addDockWidget(Qt::RightDockWidgetArea, brushDock_);
     tabifyDockWidget(layerDock_, brushDock_);
     historyDock_ = new QDockWidget("히스토리", this);
     historyDock_->setObjectName("historyDock");
-    historyDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    historyDock_->setFeatures(kDockFeatures);
     historyPanel_ = new HistoryPanel(historyDock_);
     historyDock_->setWidget(historyPanel_);
     addDockWidget(Qt::RightDockWidgetArea, historyDock_);
     tabifyDockWidget(layerDock_, historyDock_);
     paletteDock_ = new QDockWidget("팔레트", this);
     paletteDock_->setObjectName("paletteDock");
-    paletteDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    paletteDock_->setFeatures(kDockFeatures);
     palettePanel_ = new PalettePanel(paletteDock_);
     paletteDock_->setWidget(palettePanel_);
     addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
@@ -673,7 +678,7 @@ void MainWindow::buildDocks() {
     colorDock_->raise();
     refDock_ = new QDockWidget("참조", this);
     refDock_->setObjectName("refDock");
-    refDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetFloatable);
+    refDock_->setFeatures(kDockFeatures);
     refPanel_ = new ReferencePanel(refDock_);
     refDock_->setWidget(refPanel_);
     addDockWidget(Qt::RightDockWidgetArea, refDock_);
@@ -698,6 +703,15 @@ void MainWindow::buildDocks() {
     connect(refPanel_, &ReferencePanel::colorPicked, this, [this](const QColor& c) { colorPanel_->setForeground(c); });
     resizeDocks({navDock_, colorDock_, layerDock_}, {150, 330, 400}, Qt::Vertical);
     resizeDocks({colorDock_}, {280}, Qt::Horizontal);
+    for (QDockWidget* d : {colorDock_, paletteDock_, layerDock_, brushDock_, historyDock_, navDock_, refDock_}) {
+        d->setAllowedAreas(Qt::AllDockWidgetAreas);
+        panelsMenu_->addAction(d->toggleViewAction());
+    }
+    panelsMenu_->addSeparator();
+    panelsMenu_->addAction("패널 배치 초기화", this, [this] {
+        QSettings().remove("window/state");
+        QMessageBox::information(this, "패널 배치", "다음에 켤 때 기본 배치로 돌아갑니다.");
+    });
     brushPanel_->setPreviewColor(colorPanel_->foreground());
     brushPanel_->setBrushes(brushes_, builtinBrushCount_, brushCombo_->currentIndex());
     connect(brushPanel_, &BrushPanel::brushSelected, this, [this](int i) { brushCombo_->setCurrentIndex(i); });

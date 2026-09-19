@@ -3,6 +3,7 @@
 
 #include "icons.hpp"
 
+#include <QDateTime>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -43,17 +44,25 @@ void HistoryPanel::refresh() {
     busy_ = true;
     list_->clear();
     if (doc_ != nullptr) {
-        const std::vector<std::string> past = doc_->undoStack().undoTexts();
-        const std::vector<std::string> future = doc_->undoStack().redoTexts();
+        const auto past = doc_->undoStack().undoEntries();
+        const auto future = doc_->undoStack().redoEntries();
+        // "붓질 — 14:19:05". 자정을 넘긴 항목은 날짜도 붙인다.
+        const QDate today = QDate::currentDate();
+        auto label = [&](const UndoStack::HistoryEntry& e) {
+            if (e.pushedAtMs == 0) return QString::fromStdString(e.text);
+            const QDateTime t = QDateTime::fromMSecsSinceEpoch(e.pushedAtMs);
+            const QString when = t.date() == today ? t.toString("HH:mm:ss") : t.toString("MM-dd HH:mm:ss");
+            return QString("%1 — %2").arg(QString::fromStdString(e.text), when);
+        };
         auto* origin = new QListWidgetItem("(처음)", list_);
         origin->setData(Qt::UserRole, 0);
         for (usize i = 0; i < past.size(); ++i) {
-            auto* it = new QListWidgetItem(QString::fromStdString(past[i]), list_);
+            auto* it = new QListWidgetItem(label(past[i]), list_);
             it->setData(Qt::UserRole, static_cast<int>(i + 1));
         }
         const int now = static_cast<int>(past.size());
         for (usize i = 0; i < future.size(); ++i) {
-            auto* it = new QListWidgetItem(QString::fromStdString(future[i]), list_);
+            auto* it = new QListWidgetItem(label(future[i]), list_);
             it->setData(Qt::UserRole, now + static_cast<int>(i + 1));
             it->setForeground(QColor(0x80, 0x80, 0x80));
         }
