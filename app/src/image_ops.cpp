@@ -505,6 +505,54 @@ Result<Rect> transformLayer(Document& doc, const StrokeSource& src, LayerId laye
     return Ok(U);
 }
 
+// ── 그라데이션 ───────────────────────────────────────────────────────────
+
+Result<u32> fillGradient(Document& doc, const StrokeSource& src, LayerId layerId, const GradientParams& p) {
+    if (doc.recordingBroken()) return Err("기록이 고장 나 있다 — 기록 없이 바꾸지 않는다(docs/06 결정 ④)", ErrorCode::IoError);
+    const LayerPtr layer = doc.layers().find(layerId);
+    if (!layer || layer->tiles() == nullptr) return Err("래스터 레이어가 아니다", ErrorCode::InvalidArgument);
+    if (layer->locked()) return Err("잠긴 레이어다", ErrorCode::InvalidArgument);
+    const SelectionMask& sel = doc.selectionMask();
+    const Rect area = (sel.isAll() ? canvasRect(doc) : sel.bounds().intersected(canvasRect(doc)));
+    if (area.isEmpty()) return Ok(u32{0});
+    Result<ora::Image8> had = ora::readRegion(*layer->tiles(), area);
+    if (!had.ok()) return had.error();
+    ora::Image8 img = had.value();
+    const f64 vx = p.to.x - p.from.x, vy = p.to.y - p.from.y;
+    const f64 len2 = vx * vx + vy * vy;
+    const bool alphaLock = layer->alphaLocked();
+    for (i32 y = 0; y < area.height; ++y) {
+        u8* d = img.pixels.data() + static_cast<usize>(y) * img.stride();
+        for (i32 x = 0; x < area.width; ++x, d += 4) {
+            const f64 px = area.x + x + 0.5, py = area.y + y + 0.5;
+            f64 t;
+            if (len2 < 1e-9) t = 1.0;
+            else if (p.radial) t = std::sqrt(((px - p.from.x) * (px - p.from.x) + (py - p.from.y) * (py - p.from.y)) / len2);
+            else t = ((px - p.from.x) * vx + (py - p.from.y) * vy) / len2;
+            t = std::clamp(t, 0.0, 1.0);
+            u8 g[4];
+            for (int c = 0; c < 4; ++c) {
+                const f64 a = c == 0 ? p.colorA.r : c == 1 ? p.colorA.g : c == 2 ? p.colorA.b : p.colorA.a;
+                const f64 b = c == 0 ? p.colorB.r : c == 1 ? p.colorB.g : c == 2 ? p.colorB.b : p.colorB.a;
+                g[c] = toByte(static_cast<f32>(a + (b - a) * t));
+            }
+            if (alphaLock) {
+                const u32 sa = g[3];
+                for (int c = 0; c < 3; ++c) d[c] = static_cast<u8>((g[c] * sa + d[c] * (255u - sa) + 127u) / 255u);
+            } else {
+                over(d, g);
+            }
+        }
+    }
+    blendBySelection(sel, area, had.value(), img);
+    u32 changed = 0;
+    const Result<void> w = doc.paintPixels(layerId, area, img.pixels.data(), img.pixels.size(), "그라데이션", &changed);
+    if (!w.ok()) return w.error();
+    const Result<void> f = finish(doc, src, agent::RegionOpKind::Gradient, area, layerId, changed);
+    if (!f.ok()) return f.error();
+    return Ok(changed);
+}
+
 // ── 캔버스 연산 ───────────────────────────────────────────────────────────
 
 namespace {

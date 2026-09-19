@@ -163,6 +163,7 @@ MainWindow::MainWindow(app::Application& app, QString journalPath, QWidget* pare
             if (a->data().toInt() == static_cast<int>(t)) a->setChecked(true);
         }
         floodOptions_->setVisible(t == Tool::Fill || t == Tool::SelectWand);
+        gradientOptions_->setVisible(t == Tool::Gradient);
         refreshStatus();
     });
     connect(canvas_, &CanvasWidget::regionFilled, this, [this] {
@@ -348,6 +349,27 @@ void MainWindow::buildMenus() {
     viewActions_.rotR = view->addAction(themedIcon("rotate-clockwise", 20), "오른쪽으로 회전",
                                         QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_BracketRight), this, [this] { canvas_->rotateBy(15.0); });
     view->addAction("회전 초기화", QKeySequence(Qt::Key_5), this, [this] { canvas_->resetRotation(); });
+    view->addSeparator();
+    symmetryV_ = view->addAction(themedIcon("symmetry", 20), "좌우 대칭 그리기", QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S), this, [this] {
+        canvas_->setSymmetry((symmetryV_->isChecked() ? 1 : 0) | (symmetryH_->isChecked() ? 2 : 0));
+    });
+    symmetryV_->setCheckable(true);
+    symmetryH_ = view->addAction("상하 대칭 그리기", this, [this] {
+        canvas_->setSymmetry((symmetryV_->isChecked() ? 1 : 0) | (symmetryH_->isChecked() ? 2 : 0));
+    });
+    symmetryH_->setCheckable(true);
+    gridAction_ = view->addAction(themedIcon("grid", 20), "격자", QKeySequence(Qt::CTRL | Qt::Key_Apostrophe), this, [this] {
+        canvas_->setGrid(gridAction_->isChecked(), QSettings().value("grid/spacing", 64).toInt());
+    });
+    gridAction_->setCheckable(true);
+    view->addAction("격자 간격...", this, [this] {
+        bool ok = false;
+        const int v = QInputDialog::getInt(this, "격자", "간격(px)", QSettings().value("grid/spacing", 64).toInt(), 2, 4096, 1, &ok);
+        if (!ok) return;
+        QSettings().setValue("grid/spacing", v);
+        canvas_->setGrid(gridAction_->isChecked(), v);
+    });
+    view->addSeparator();
     viewActions_.mirror = view->addAction(themedIcon("flip-horizontal", 20), "미러 보기", QKeySequence(Qt::ALT | Qt::Key_M), this,
                                           [this] { canvas_->toggleMirror(); });
     view->addSeparator();
@@ -401,6 +423,14 @@ void MainWindow::buildToolbars() {
         ->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_M));
     addTool("lasso", "올가미", "올가미 선택 (L)", Qt::Key_L, Tool::SelectLasso);
     addTool("wand", "마술봉", "마술봉 (W) — 이어진 같은 색 영역", Qt::Key_W, Tool::SelectWand);
+    toolsBar_->addSeparator();
+    addTool("line", "직선", "직선 (U) — 현재 붓으로 긋는다. Shift: 45°", Qt::Key_U, Tool::Line);
+    addTool("rectangle", "사각형", "사각형 (Shift+U) — 현재 붓으로 테두리. Shift: 정사각형", Qt::Key_U, Tool::Rectangle)
+        ->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_U));
+    addTool("circle", "타원", "타원 (Ctrl+U 아님 — 도구상자에서) — 현재 붓으로 테두리. Shift: 정원", Qt::Key_unknown, Tool::Ellipse)
+        ->setShortcut(QKeySequence());
+    addTool("gradient", "그라데이션", "그라데이션 (Shift+G) — 전경→배경(또는 투명), 선택 안에", Qt::Key_G, Tool::Gradient)
+        ->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_G));
 
     // 상단 옵션 툴바 — 붓 프리셋 · 크기 · 불투명도 · 보정 · 실행취소
     optionsBar_ = addToolBar("옵션");
@@ -503,6 +533,26 @@ void MainWindow::buildToolbars() {
     optionsBar_->addWidget(floodOptions_);
     floodOptions_->setVisible(false);
 
+    // 그라데이션 옵션(그라데이션 도구일 때만)
+    gradientOptions_ = new QWidget(optionsBar_);
+    {
+        auto* row = new QHBoxLayout(gradientOptions_);
+        row->setContentsMargins(6, 0, 0, 0);
+        row->setSpacing(6);
+        auto* kind = new QComboBox(gradientOptions_);
+        kind->addItems({"선형", "원형"});
+        auto* to = new QComboBox(gradientOptions_);
+        to->addItems({"전경 → 배경", "전경 → 투명"});
+        row->addWidget(kind);
+        row->addWidget(to);
+        const auto push = [this, kind, to] { canvas_->setGradientOptions(kind->currentIndex() == 1, to->currentIndex() == 1); };
+        connect(kind, &QComboBox::currentIndexChanged, this, [push](int) { push(); });
+        connect(to, &QComboBox::currentIndexChanged, this, [push](int) { push(); });
+        push();
+    }
+    optionsBar_->addWidget(gradientOptions_);
+    gradientOptions_->setVisible(false);
+
     // 자유 변형 옵션(변형 중일 때만)
     transformOptions_ = new QWidget(optionsBar_);
     {
@@ -565,6 +615,9 @@ void MainWindow::buildToolbars() {
     optionsBar_->addAction(viewActions_.rotL);
     optionsBar_->addAction(viewActions_.rotR);
     optionsBar_->addAction(viewActions_.mirror);
+    optionsBar_->addSeparator();
+    optionsBar_->addAction(symmetryV_);
+    optionsBar_->addAction(gridAction_);
     auto* spacer = new QWidget(optionsBar_);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     optionsBar_->addWidget(spacer);
@@ -669,8 +722,10 @@ void MainWindow::buildDocks() {
     connect(colorPanel_, &ColorPanel::foregroundChanged, this, [this](const QColor& c) {
         brushPanel_->setPreviewColor(c);
         palettePanel_->setCurrentColor(c);
+        canvas_->setBackgroundColor(colorPanel_->background());
         refreshStatus();
     });
+    canvas_->setBackgroundColor(colorPanel_->background());
     palettePanel_->setCurrentColor(colorPanel_->foreground());
 }
 
@@ -1354,6 +1409,10 @@ void MainWindow::refreshStatus() {
     case Tool::SelectEllipse: toolName = "타원 선택"; toolIcon = "circle-dashed"; break;
     case Tool::SelectLasso: toolName = "올가미"; toolIcon = "lasso"; break;
     case Tool::SelectWand: toolName = "마술봉"; toolIcon = "wand"; break;
+    case Tool::Line: toolName = "직선"; toolIcon = "line"; break;
+    case Tool::Rectangle: toolName = "사각형"; toolIcon = "rectangle"; break;
+    case Tool::Ellipse: toolName = "타원"; toolIcon = "circle"; break;
+    case Tool::Gradient: toolName = "그라데이션"; toolIcon = "gradient"; break;
     }
     if (statusToolIconName_ != toolIcon) {
         statusToolIconName_ = toolIcon;

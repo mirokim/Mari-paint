@@ -143,6 +143,10 @@ private:
     QSpinBox* deadZoneSpin_ = nullptr;
     QWidget* floodOptions_ = nullptr;
     QWidget* transformOptions_ = nullptr;
+    QWidget* gradientOptions_ = nullptr;
+    QAction* symmetryV_ = nullptr;
+    QAction* symmetryH_ = nullptr;
+    QAction* gridAction_ = nullptr;
     QDoubleSpinBox* xfDx_ = nullptr;
     QDoubleSpinBox* xfDy_ = nullptr;
     QDoubleSpinBox* xfSx_ = nullptr;

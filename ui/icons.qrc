@@ -44,5 +44,11 @@
     <file alias="stack-2.svg">icons/stack-2.svg</file>
     <file alias="keyboard.svg">icons/keyboard.svg</file>
     <file alias="app.png">icons/app/mari-paint-256.png</file>
+    <file alias="line.svg">icons/line.svg</file>
+    <file alias="rectangle.svg">icons/rectangle.svg</file>
+    <file alias="circle.svg">icons/circle.svg</file>
+    <file alias="gradient.svg">icons/gradient.svg</file>
+    <file alias="symmetry.svg">icons/symmetry.svg</file>
+    <file alias="grid.svg">icons/grid.svg</file>
   </qresource>
 </RCC>

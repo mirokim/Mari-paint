@@ -57,9 +57,13 @@ struct LatencyStats {
 };
 
 /// 캔버스 도구. 지우개는 토글이 아니라 도구다(페인팅 앱 관례). 펜 뒤집기는 여전히 우선한다.
-enum class Tool { Brush, Eraser, Eyedropper, Hand, Fill, SelectRect, SelectEllipse, SelectLasso, SelectWand };
+enum class Tool { Brush, Eraser, Eyedropper, Hand, Fill, SelectRect, SelectEllipse, SelectLasso, SelectWand, Line, Rectangle, Ellipse, Gradient };
 [[nodiscard]] inline bool isSelectionTool(Tool t) noexcept {
     return t == Tool::SelectRect || t == Tool::SelectEllipse || t == Tool::SelectLasso || t == Tool::SelectWand;
+}
+/// 드래그로 모양을 정한 뒤 놓을 때 한 번에 그리는 도구(선·사각형·타원·그라데이션).
+[[nodiscard]] constexpr bool isShapeTool(Tool t) noexcept {
+    return t == Tool::Line || t == Tool::Rectangle || t == Tool::Ellipse || t == Tool::Gradient;
 }
 
 /// 태블릿 테스터용 마지막 펜 샘플.
@@ -114,6 +118,17 @@ public:
     void invertSelection();
     /// 문서의 선택 마스크가 바깥에서 바뀌었다 — 점선을 다시 만든다.
     void selectionChangedExternally();
+
+    // ── 대칭 · 격자 · 그라데이션 옵션 ────────────────────────────────────
+    /// 0 없음 · 1 세로축(좌우 대칭) · 2 가로축 · 3 둘 다. 축은 캔버스 중앙.
+    void setSymmetry(int mode) { symmetry_ = mode; update(); }
+    [[nodiscard]] int symmetry() const noexcept { return symmetry_; }
+    void setGrid(bool on, int spacingPx) { gridOn_ = on; gridPx_ = std::max(2, spacingPx); update(); }
+    [[nodiscard]] bool gridOn() const noexcept { return gridOn_; }
+    /// 그라데이션: radial · 배경색 대신 투명으로.
+    void setGradientOptions(bool radial, bool toTransparent) { gradRadial_ = radial; gradToTransparent_ = toTransparent; }
+    /// 도형 도구가 쓸 배경색(그라데이션 끝 색).
+    void setBackgroundColor(const QColor& c) { bgColor_ = c; }
 
     // ── 자유 변형 (Ctrl+T) ───────────────────────────────────────────────
     /// 활성 레이어(선택 안)의 자유 변형을 시작한다. 실패하면 false(빈 레이어·그룹·잠금).
@@ -214,6 +229,23 @@ private:
     void applySelection(SelectionMask mask, Qt::KeyboardModifiers mods);
     void finishSelectionDrag(const QPointF& logicalPos, Qt::KeyboardModifiers mods);
     void bucketFill(const QPointF& logicalPos);
+    /// 도형 도구: 드래그 끝. 선·사각형·타원은 현재 붓으로 한 획을 합성해 그린다(같은 파이프라인·기록).
+    void finishShapeDrag(const QPointF& logicalEnd, Qt::KeyboardModifiers mods);
+    /// 캔버스 좌표 점들을 붓 획 하나로 그린다.
+    void strokePolyline(const std::vector<QPointF>& canvasPts, bool closed);
+    /// 대칭: 이벤트를 축에 대해 뒤집는다.
+    [[nodiscard]] stroke::RawInputEvent mirrored(const stroke::RawInputEvent& e, int axis) const;
+    void paintOverlays(QPainter& p);
+
+    int symmetry_ = 0;
+    bool gridOn_ = false;
+    int gridPx_ = 64;
+    bool gradRadial_ = false;
+    bool gradToTransparent_ = false;
+    QColor bgColor_ = Qt::white;
+    bool shapeDrag_ = false;
+    QPointF shapeStart_, shapeCur_;
+    std::vector<std::unique_ptr<app::LiveStroke>> mirrors_; ///< 대칭 획(축 1·2·3 → 최대 3개)
 
     // 자유 변형 상태
     struct Transforming {

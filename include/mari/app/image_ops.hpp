@@ -71,6 +71,17 @@ struct TransformParams {
 [[nodiscard]] Result<Rect> transformLayer(Document& doc, const StrokeSource& src, LayerId layerId,
                                           const TransformParams& p);
 
+// ── 그라데이션 ───────────────────────────────────────────────────────────
+
+struct GradientParams {
+    PointF from{}, to{};
+    Color8 colorA{}, colorB{};
+    bool radial = false;
+};
+
+/// 선택(없으면 캔버스 전체)에 그라데이션을 소스 오버로 칠한다. 실행취소·기록 포함. 돌려주는 값 = 바뀐 타일 수.
+[[nodiscard]] Result<u32> fillGradient(Document& doc, const StrokeSource& src, LayerId layerId, const GradientParams& p);
+
 // ── 캔버스 연산 (모든 레이어) ─────────────────────────────────────────────
 
 /// 캔버스 전체를 좌우/상하로 뒤집는다(모든 래스터 레이어, 실행취소 하나).

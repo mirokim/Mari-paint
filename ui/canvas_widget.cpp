@@ -1,3 +1,4 @@
+#define _USE_MATH_DEFINES
 // Mari Paint — 캔버스 위젯 구현 (ui/canvas_widget.hpp)
 #include "canvas_widget.hpp"
 
@@ -295,6 +296,7 @@ void CanvasWidget::paintEvent(QPaintEvent* e) {
         p.setPen(Qt::white);
         p.drawText(box, Qt::AlignCenter, txt);
     }
+    paintOverlays(p);
     if (xf_.active) paintTransform(p);
     // 선택 점선(marching ants): 캔버스 좌표 경로를 뷰 변환으로 그린다. 코스메틱 펜이라 줌과 무관하게 1px.
     if (hasSelection_ && !xf_.active) {
@@ -424,7 +426,7 @@ bool CanvasWidget::nativeEventFilter(const QByteArray& eventType, void* message,
         const bool inside = physRect().contains(QPointF(pt.x, pt.y));
         // 뷰 드래그(Space·손 도구)와 스포이드는 Qt 마우스 이벤트로 처리한다 — 획이 아니다.
         const bool notAStroke = viewDragActive() || tool_ == Tool::Eyedropper || altEyedropper_ || shiftDown_ ||
-                                isSelectionTool(tool_) || tool_ == Tool::Fill || xf_.active;
+                                isSelectionTool(tool_) || isShapeTool(tool_) || tool_ == Tool::Fill || xf_.active;
         if (!inside || !IS_POINTER_FIRSTBUTTON_WPARAM(msg->wParam) || notAStroke) {
             bypassId_ = id;
             return false;
@@ -506,6 +508,22 @@ void CanvasWidget::onPointerDown(const mari::win::PointerSample& s) {
     }
     live_ = std::move(begun).value();
     scheduleCanvasRepaint(live_->takeDisplayDirty(), s.event.timestampNs);
+    // 대칭: 축마다 획을 하나 더 시작한다(같은 설정, 다른 시드). 각각 따로 기록·실행취소된다.
+    mirrors_.clear();
+    if (symmetry_ != 0) {
+        for (int axis : {1, 2, 3}) {
+            // 1 세로축 · 2 가로축 · 3 둘 다(점대칭). 둘 다 켜면 세 획이 더 생긴다.
+            if (axis == 3 ? symmetry_ != 3 : (symmetry_ & axis) == 0) continue;
+            app::LiveStrokeConfig mc = cfg;
+            mc.seed = cfg.seed ^ (0x9E3779B97F4A7C15ull * static_cast<u64>(axis));
+            Result<std::unique_ptr<app::LiveStroke>> mb = app::LiveStroke::begin(
+                *doc_, StrokeSource::humanPen(), doc_->layers().activeLayer(), mc, mirrored(first, axis));
+            if (mb.ok()) {
+                mirrors_.push_back(std::move(mb).value());
+                scheduleCanvasRepaint(mirrors_.back()->takeDisplayDirty(), s.event.timestampNs);
+            }
+        }
+    }
 }
 
 void CanvasWidget::onPointerMove(const mari::win::PointerSample& s) {
@@ -515,6 +533,16 @@ void CanvasWidget::onPointerMove(const mari::win::PointerSample& s) {
     const stroke::RawInputEvent e = shapedEvent(s);
     live_->extend(e);
     scheduleCanvasRepaint(live_->takeDisplayDirty(), e.timestampNs);
+    if (!mirrors_.empty()) {
+        int idx = 0;
+        for (int axis : {1, 2, 3}) {
+            if (axis == 3 ? symmetry_ != 3 : (symmetry_ & axis) == 0) continue;
+            if (static_cast<usize>(idx) >= mirrors_.size()) break;
+            mirrors_[static_cast<usize>(idx)]->extend(mirrored(e, axis));
+            scheduleCanvasRepaint(mirrors_[static_cast<usize>(idx)]->takeDisplayDirty(), e.timestampNs);
+            ++idx;
+        }
+    }
 }
 
 void CanvasWidget::onPointerUp(const mari::win::PointerSample& s) {
@@ -532,6 +560,24 @@ void CanvasWidget::finishStroke(const stroke::RawInputEvent* last) {
     }
     const u64 inputNs = last != nullptr ? last->timestampNs : 0;
     const u64 t0 = stroke::monotonicNowNs();
+    // 대칭 획 먼저 마무리(결과는 주 획으로만 보고한다 — 실행취소는 각각 남는다).
+    if (!mirrors_.empty()) {
+        int idx = 0;
+        for (int axis : {1, 2, 3}) {
+            if (axis == 3 ? symmetry_ != 3 : (symmetry_ & axis) == 0) continue;
+            if (static_cast<usize>(idx) >= mirrors_.size()) break;
+            std::unique_ptr<app::LiveStroke>& m = mirrors_[static_cast<usize>(idx)];
+            if (last != nullptr) {
+                const stroke::RawInputEvent me = mirrored(*last, axis);
+                (void)m->end(&me);
+            } else {
+                (void)m->end(nullptr);
+            }
+            scheduleCanvasRepaint(m->takeDisplayDirty(), 0);
+            ++idx;
+        }
+        mirrors_.clear();
+    }
     Result<app::LiveStrokeOutcome> ended = live_->end(last);
     if (traceOn()) {
         std::fprintf(stderr, "[mari-gui] LiveStroke::end %.2f ms\n",
@@ -853,6 +899,171 @@ void CanvasWidget::bucketFill(const QPointF& logicalPos) {
     Q_EMIT regionFilled();
 }
 
+// ── 격자 · 대칭 · 도형 ────────────────────────────────────────────────────
+
+void CanvasWidget::paintOverlays(QPainter& p) {
+    if (doc_ == nullptr) return;
+    const Size cs = doc_->canvasSize();
+    const QTransform t = canvasToWidget();
+    if (gridOn_) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setTransform(t);
+        QPen minor(QColor(0x3d, 0x7b, 0xd9, 70), 0);
+        QPen major(QColor(0x3d, 0x7b, 0xd9, 140), 0);
+        for (int x = 0, i = 0; x <= cs.width; x += gridPx_, ++i) {
+            p.setPen(i % 5 == 0 ? major : minor);
+            p.drawLine(QLineF(x, 0, x, cs.height));
+        }
+        for (int y = 0, i = 0; y <= cs.height; y += gridPx_, ++i) {
+            p.setPen(i % 5 == 0 ? major : minor);
+            p.drawLine(QLineF(0, y, cs.width, y));
+        }
+        p.restore();
+    }
+    if (symmetry_ != 0) {
+        p.save();
+        p.setTransform(t);
+        QPen axis(QColor(0xff, 0x60, 0x60, 200), 0, Qt::DashLine);
+        p.setPen(axis);
+        if (symmetry_ & 1) p.drawLine(QLineF(cs.width * 0.5, 0, cs.width * 0.5, cs.height));
+        if (symmetry_ & 2) p.drawLine(QLineF(0, cs.height * 0.5, cs.width, cs.height * 0.5));
+        p.restore();
+    }
+    if (shapeDrag_) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(0x3d, 0x7b, 0xd9), 1.5, Qt::DashLine));
+        const QRectF r = QRectF(shapeStart_, shapeCur_).normalized();
+        if (tool_ == Tool::Line || tool_ == Tool::Gradient) p.drawLine(shapeStart_, shapeCur_);
+        else if (tool_ == Tool::Rectangle) p.drawRect(r);
+        else if (tool_ == Tool::Ellipse) p.drawEllipse(r);
+        if (tool_ == Tool::Gradient) {
+            p.setBrush(Qt::white);
+            p.drawEllipse(shapeStart_, 4, 4);
+            p.setBrush(Qt::black);
+            p.drawEllipse(shapeCur_, 4, 4);
+        }
+    }
+}
+
+stroke::RawInputEvent CanvasWidget::mirrored(const stroke::RawInputEvent& e, int axis) const {
+    stroke::RawInputEvent m = e;
+    const Size cs = doc_->canvasSize();
+    if (axis & 1) {
+        m.x = static_cast<f64>(cs.width) - e.x;
+        m.tiltXDeg = -e.tiltXDeg;
+    }
+    if (axis & 2) {
+        m.y = static_cast<f64>(cs.height) - e.y;
+        m.tiltYDeg = -e.tiltYDeg;
+    }
+    return m;
+}
+
+void CanvasWidget::strokePolyline(const std::vector<QPointF>& pts, bool closed) {
+    if (doc_ == nullptr || live_ != nullptr || pts.size() < 2) return;
+    app::LiveStrokeConfig cfg = cfgProvider_ ? cfgProvider_() : app::LiveStrokeConfig{};
+    cfg.eraser = tool_ == Tool::Eraser ? true : cfg.eraser;
+    cfg.smoothing = stroke::SmoothingMode::Off; // 도형은 정확해야 한다
+    cfg.deadZone = 0.0f;
+    cfg.seed = (++strokeSeed_) ^ stroke::monotonicNowNs();
+    cfg.undoText = tool_ == Tool::Line ? "선" : tool_ == Tool::Rectangle ? "사각형" : "타원";
+    // 점들을 1.5px 간격으로 촘촘히(보간기가 붓 간격에 맞춰 찍는다).
+    std::vector<QPointF> dense;
+    const usize n = pts.size() + (closed ? 1 : 0);
+    for (usize i = 0; i + 1 < n; ++i) {
+        const QPointF a = pts[i], b = pts[(i + 1) % pts.size()];
+        const double len = QLineF(a, b).length();
+        const int steps = std::max(1, static_cast<int>(len / 1.5));
+        for (int k = 0; k < steps; ++k) dense.push_back(a + (b - a) * (static_cast<double>(k) / steps));
+    }
+    dense.push_back(closed ? pts.front() : pts.back());
+    const u64 t0 = stroke::monotonicNowNs();
+    const auto ev = [&](usize i) {
+        stroke::RawInputEvent e{};
+        e.x = dense[i].x();
+        e.y = dense[i].y();
+        e.pressure = 1.0f;
+        e.pressureMax = 1.0f;
+        e.hasPressure = true;
+        e.hasTilt = false;
+        e.timestampNs = t0 + static_cast<u64>(i) * 1'000'000ull;
+        return e;
+    };
+    Result<std::unique_ptr<app::LiveStroke>> begun =
+        app::LiveStroke::begin(*doc_, StrokeSource::humanPen(), doc_->layers().activeLayer(), cfg, ev(0));
+    if (!begun.ok()) {
+        Q_EMIT strokeRefused(QString::fromStdString(begun.message()));
+        return;
+    }
+    std::unique_ptr<app::LiveStroke> ls = std::move(begun).value();
+    for (usize i = 1; i + 1 < dense.size(); ++i) ls->extend(ev(i));
+    const stroke::RawInputEvent last = ev(dense.size() - 1);
+    Result<app::LiveStrokeOutcome> ended = ls->end(&last);
+    if (ended.ok()) {
+        scheduleCanvasRepaint(ended.value().dirtyBounds, 0);
+        Q_EMIT strokeFinished(ended.value());
+    } else {
+        Q_EMIT strokeRefused(QString::fromStdString(ended.message()));
+    }
+}
+
+void CanvasWidget::finishShapeDrag(const QPointF& logicalEnd, Qt::KeyboardModifiers mods) {
+    if (doc_ == nullptr) return;
+    const QTransform inv = canvasToWidget().inverted();
+    QPointF a = inv.map(shapeStart_);
+    QPointF b = inv.map(logicalEnd);
+    if (mods & Qt::ShiftModifier) {
+        // Shift: 선은 45° 단위, 사각형/타원은 정사각/정원, 그라데이션은 45°.
+        const QPointF d = b - a;
+        if (tool_ == Tool::Line || tool_ == Tool::Gradient) {
+            const double ang = std::round(std::atan2(d.y(), d.x()) / (M_PI / 4)) * (M_PI / 4);
+            const double len = std::hypot(d.x(), d.y());
+            b = a + QPointF(std::cos(ang) * len, std::sin(ang) * len);
+        } else {
+            const double sz = std::max(std::fabs(d.x()), std::fabs(d.y()));
+            b = a + QPointF(d.x() < 0 ? -sz : sz, d.y() < 0 ? -sz : sz);
+        }
+    }
+    if (tool_ == Tool::Gradient) {
+        app::LiveStrokeConfig cfg = cfgProvider_ ? cfgProvider_() : app::LiveStrokeConfig{};
+        app::GradientParams g;
+        g.from = PointF{static_cast<f32>(a.x()), static_cast<f32>(a.y())};
+        g.to = PointF{static_cast<f32>(b.x()), static_cast<f32>(b.y())};
+        g.colorA = cfg.color;
+        g.colorB = gradToTransparent_ ? Color8{cfg.color.r, cfg.color.g, cfg.color.b, 0}
+                                      : Color8::rgba(static_cast<u8>(bgColor_.red()), static_cast<u8>(bgColor_.green()),
+                                                     static_cast<u8>(bgColor_.blue()), 255);
+        g.radial = gradRadial_;
+        const Result<u32> r = app::fillGradient(*doc_, StrokeSource::humanPen(), doc_->layers().activeLayer(), g);
+        if (!r.ok()) {
+            Q_EMIT strokeRefused(QString::fromStdString(r.message()));
+            return;
+        }
+        invalidateCanvas();
+        Q_EMIT regionFilled();
+        return;
+    }
+    std::vector<QPointF> pts;
+    if (tool_ == Tool::Line) {
+        pts = {a, b};
+        strokePolyline(pts, false);
+    } else if (tool_ == Tool::Rectangle) {
+        const QRectF r = QRectF(a, b).normalized();
+        pts = {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()};
+        strokePolyline(pts, true);
+    } else if (tool_ == Tool::Ellipse) {
+        const QRectF r = QRectF(a, b).normalized();
+        const int n = std::max(24, static_cast<int>((r.width() + r.height()) * 2));
+        for (int i = 0; i < n; ++i) {
+            const double th = 2.0 * M_PI * i / n;
+            pts.push_back(QPointF(r.center().x() + r.width() * 0.5 * std::cos(th), r.center().y() + r.height() * 0.5 * std::sin(th)));
+        }
+        strokePolyline(pts, true);
+    }
+}
+
 // ── 자유 변형 ─────────────────────────────────────────────────────────────
 
 bool CanvasWidget::beginTransform() {
@@ -1064,6 +1275,13 @@ void CanvasWidget::mousePressEvent(QMouseEvent* e) {
             e->accept();
             return;
         }
+        if (isShapeTool(tool_)) {
+            shapeDrag_ = true;
+            shapeStart_ = shapeCur_ = e->position();
+            update();
+            e->accept();
+            return;
+        }
         if (isSelectionTool(tool_)) {
             selDrag_ = true;
             selStart_ = selCur_ = e->position();
@@ -1154,6 +1372,12 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
         e->accept();
         return;
     }
+    if (shapeDrag_) {
+        shapeCur_ = e->position();
+        update();
+        e->accept();
+        return;
+    }
     if (selDrag_) {
         selCur_ = e->position();
         if (tool_ == Tool::SelectLasso) {
@@ -1212,6 +1436,13 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* e) {
 void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) {
     if (xf_.active && e->button() == Qt::LeftButton) {
         xf_.drag = 0;
+        e->accept();
+        return;
+    }
+    if (shapeDrag_ && e->button() == Qt::LeftButton) {
+        shapeDrag_ = false;
+        finishShapeDrag(e->position(), e->modifiers());
+        update();
         e->accept();
         return;
     }
